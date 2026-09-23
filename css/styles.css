@@ -1,0 +1,765 @@
+/* Bellum Penumbrum - Stylesheet */
+
+/* ============================================
+   RESET & BASE
+   ============================================ */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    /* Colori tema lovecraftiano */
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-tertiary: #1a1a25;
+    
+    --text-primary: #e0e0e0;
+    --text-secondary: #a0a0a0;
+    --text-muted: #606060;
+    
+    --accent-primary: #8b4513; /* Marrone lovecraftiano */
+    --accent-secondary: #4a3728;
+    --accent-highlight: #d4a574;
+    
+    --success: #22c55e;
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    
+    /* Colori fazioni */
+    --faction-chi: #FFFFFF;
+    --faction-inf: #4169E1;
+    --faction-pes: #2C2C2C;
+    --faction-bul: #DC143C;
+    --faction-gro: #228B22;
+    --faction-clo: #FFD700;
+    --faction-ind: #8B4513;
+    
+    /* Dimensioni */
+    --card-width: 120px;
+    --card-height: 170px;
+    --cell-size: 140px;
+    
+    /* Transizioni */
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.3s ease;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* ============================================
+   SCREEN MANAGEMENT
+   ============================================ */
+.screen {
+    display: none;
+    min-height: 100vh;
+    animation: fadeIn 0.3s ease;
+}
+
+.screen.active {
+    display: flex;
+    flex-direction: column;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* ============================================
+   AUTH SCREEN
+   ============================================ */
+#auth-screen {
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+}
+
+.auth-container {
+    background: var(--bg-tertiary);
+    padding: 3rem;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    max-width: 400px;
+    width: 90%;
+    border: 1px solid var(--accent-secondary);
+}
+
+.game-title {
+    font-size: 2.5rem;
+    color: var(--accent-highlight);
+    text-align: center;
+    margin-bottom: 0.5rem;
+    text-shadow: 0 0 10px rgba(212, 165, 116, 0.3);
+}
+
+.game-subtitle {
+    text-align: center;
+    color: var(--text-secondary);
+    margin-bottom: 2rem;
+    font-size: 0.9rem;
+}
+
+.auth-form h2 {
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--accent-secondary);
+    border-radius: 6px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 1rem;
+    transition: border-color var(--transition-fast);
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--accent-highlight);
+}
+
+.btn-primary {
+    width: 100%;
+    padding: 0.875rem;
+    background: var(--accent-primary);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-primary:hover {
+    background: var(--accent-highlight);
+    color: var(--bg-primary);
+    transform: translateY(-1px);
+}
+
+.btn-secondary {
+    padding: 0.75rem 1.5rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--text-muted);
+    border-radius: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-secondary:hover {
+    border-color: var(--text-primary);
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.auth-toggle {
+    text-align: center;
+    margin-top: 1.5rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.auth-toggle a {
+    color: var(--accent-highlight);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.auth-toggle a:hover {
+    text-decoration: underline;
+}
+
+.auth-message {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 0.9rem;
+    display: none;
+}
+
+.auth-message.error {
+    display: block;
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--danger);
+    border: 1px solid var(--danger);
+}
+
+.auth-message.success {
+    display: block;
+    background: rgba(34, 197, 94, 0.1);
+    color: var(--success);
+    border: 1px solid var(--success);
+}
+
+/* ============================================
+   GAME HEADER
+   ============================================ */
+.game-header {
+    background: var(--bg-secondary);
+    padding: 1rem 2rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--accent-secondary);
+}
+
+.game-header h1,
+.game-header h2 {
+    color: var(--accent-highlight);
+    font-size: 1.5rem;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+#user-display {
+    color: var(--text-secondary);
+}
+
+/* ============================================
+   DASHBOARD
+   ============================================ */
+.dashboard-content {
+    flex: 1;
+    padding: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+.stats-section,
+.actions-section {
+    margin-bottom: 3rem;
+}
+
+.stats-section h2,
+.actions-section h2 {
+    margin-bottom: 1.5rem;
+    color: var(--text-primary);
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+}
+
+.stat-card {
+    background: var(--bg-tertiary);
+    padding: 2rem;
+    border-radius: 12px;
+    text-align: center;
+    border: 1px solid var(--accent-secondary);
+    transition: transform var(--transition-normal);
+}
+
+.stat-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--accent-highlight);
+}
+
+.stat-value {
+    display: block;
+    font-size: 3rem;
+    font-weight: 700;
+    color: var(--accent-highlight);
+    margin-bottom: 0.5rem;
+}
+
+.stat-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.actions-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1.5rem;
+}
+
+.action-card {
+    background: var(--bg-tertiary);
+    padding: 2rem;
+    border-radius: 12px;
+    border: 1px solid var(--accent-secondary);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    cursor: pointer;
+    transition: all var(--transition-normal);
+}
+
+.action-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--accent-highlight);
+    background: var(--bg-secondary);
+}
+
+.action-icon {
+    font-size: 3rem;
+}
+
+.action-label {
+    color: var(--text-primary);
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+/* ============================================
+   GAME BOARD
+   ============================================ */
+#game-screen {
+    height: 100vh;
+    overflow: hidden;
+}
+
+.game-board {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 1rem;
+    padding: 2rem;
+    background: radial-gradient(ellipse at center, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+}
+
+.board-row {
+    display: flex;
+    gap: 1rem;
+}
+
+.cell {
+    width: var(--cell-size);
+    height: var(--cell-size);
+    background: var(--bg-tertiary);
+    border: 2px solid var(--accent-secondary);
+    border-radius: 8px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    transition: all var(--transition-fast);
+    position: relative;
+}
+
+.cell:hover {
+    border-color: var(--accent-highlight);
+    box-shadow: 0 0 15px rgba(212, 165, 116, 0.3);
+}
+
+.cell.targetable {
+    border-color: var(--danger);
+    cursor: pointer;
+    animation: pulse 1s infinite;
+}
+
+.cell.targetable:hover {
+    background: rgba(239, 68, 68, 0.2);
+}
+
+@keyframes pulse {
+    0%, 100% { box-shadow: 0 0 5px rgba(239, 68, 68, 0.3); }
+    50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.6); }
+}
+
+.cell.occupied {
+    background: var(--bg-secondary);
+}
+
+/* Card in cell */
+.cell .card {
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+/* ============================================
+   GAME SIDEBAR
+   ============================================ */
+.game-sidebar {
+    width: 350px;
+    background: var(--bg-secondary);
+    border-left: 1px solid var(--accent-secondary);
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
+.hand-section h3,
+.graveyard-section h3 {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 1rem;
+}
+
+.card-hand {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    min-height: 200px;
+}
+
+.card-hand .card {
+    width: var(--card-width);
+    height: var(--card-height);
+    background: var(--bg-tertiary);
+    border: 2px solid var(--accent-secondary);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    position: relative;
+    overflow: hidden;
+}
+
+.card-hand .card:hover {
+    transform: translateY(-8px);
+    border-color: var(--accent-highlight);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+}
+
+.card-hand .card.playable {
+    border-color: var(--success);
+}
+
+.card-hand .card.unplayable {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.controls-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.controls-section .btn-primary,
+.controls-section .btn-secondary {
+    width: 100%;
+}
+
+.graveyard-pile {
+    width: var(--card-width);
+    height: var(--card-height);
+    background: var(--bg-tertiary);
+    border: 2px dashed var(--text-muted);
+    border-radius: 8px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: relative;
+}
+
+.graveyard-count {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-muted);
+}
+
+/* ============================================
+   CARD STYLES
+   ============================================ */
+.card {
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    overflow: hidden;
+    position: relative;
+}
+
+.card-image {
+    width: 100%;
+    height: 60%;
+    background: var(--bg-secondary);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 3rem;
+}
+
+.card-info {
+    padding: 0.75rem;
+}
+
+.card-name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 0.25rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.card-type {
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.5rem;
+}
+
+.card-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+.card-mana {
+    background: var(--accent-primary);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.card-hp {
+    background: var(--danger);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.card-atk {
+    background: var(--success);
+    padding: 0.25rem 0.5rem;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+/* Faction colors */
+.card.faction-CHI { border-color: var(--faction-chi); }
+.card.faction-INF { border-color: var(--faction-inf); }
+.card.faction-PES { border-color: var(--faction-pes); }
+.card.faction-BUL { border-color: var(--faction-bul); }
+.card.faction-GRO { border-color: var(--faction-gro); }
+.card.faction-CLO { border-color: var(--faction-clo); }
+.card.faction-IND { border-color: var(--faction-ind); }
+
+/* ============================================
+   POPUPS & MODALS
+   ============================================ */
+.popup-overlay,
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    animation: fadeIn 0.2s ease;
+}
+
+.popup-content,
+.modal-content {
+    background: var(--bg-tertiary);
+    padding: 2rem;
+    border-radius: 12px;
+    max-width: 500px;
+    width: 90%;
+    border: 2px solid var(--accent-secondary);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+
+.popup-content h3,
+.modal-content h3 {
+    color: var(--accent-highlight);
+    margin-bottom: 1rem;
+}
+
+.popup-content p,
+.modal-content p {
+    color: var(--text-secondary);
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+.popup-actions,
+.modal-actions {
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+}
+
+/* Lovecraft popup */
+.lovecraft-style {
+    border-color: var(--accent-primary);
+    background: linear-gradient(135deg, var(--bg-tertiary) 0%, #1a0a0a 100%);
+    text-align: center;
+}
+
+.lovecraft-style h3 {
+    font-size: 1.5rem;
+    animation: flicker 2s infinite;
+}
+
+@keyframes flicker {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+.lovecraft-style p {
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+/* ============================================
+   DECKBUILDER
+   ============================================ */
+.deckbuilder-content {
+    flex: 1;
+    padding: 2rem;
+    display: grid;
+    grid-template-columns: 1fr 2fr 1fr;
+    gap: 2rem;
+    max-width: 1400px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+.deckbuilder-factions,
+.deckbuilder-cards,
+.deckbuilder-extra {
+    background: var(--bg-tertiary);
+    padding: 1.5rem;
+    border-radius: 12px;
+    border: 1px solid var(--accent-secondary);
+}
+
+.deckbuilder-factions h3,
+.deckbuilder-cards h3,
+.deckbuilder-extra h3 {
+    color: var(--accent-highlight);
+    margin-bottom: 1.5rem;
+}
+
+.faction-selection {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.faction-slot {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.faction-slot label {
+    min-width: 120px;
+    color: var(--text-secondary);
+}
+
+.faction-slot select {
+    flex: 1;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--accent-secondary);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 1rem;
+}
+
+.deck-list,
+.extra-deck-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.deck-stats {
+    margin-top: 1.5rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--accent-secondary);
+    display: flex;
+    justify-content: space-between;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+/* ============================================
+   UTILITY CLASSES
+   ============================================ */
+.hidden {
+    display: none !important;
+}
+
+.text-success {
+    color: var(--success);
+}
+
+.text-danger {
+    color: var(--danger);
+}
+
+.text-warning {
+    color: var(--warning);
+}
+
+/* ============================================
+   RESPONSIVE
+   ============================================ */
+@media (max-width: 768px) {
+    .game-board {
+        padding: 1rem;
+    }
+    
+    .cell {
+        width: 100px;
+        height: 100px;
+    }
+    
+    .game-sidebar {
+        width: 100%;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+    
+    .deckbuilder-content {
+        grid-template-columns: 1fr;
+    }
+    
+    .stats-grid,
+    .actions-grid {
+        grid-template-columns: 1fr;
+    }
+}
