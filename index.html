@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bellum Penumbrum</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Schermata di Login -->
+    <div id="auth-screen" class="screen active">
+        <div class="auth-container">
+            <h1 class="game-title">Bellum Penumbrum</h1>
+            <p class="game-subtitle">Il gioco di carte tattico lovecraftiano</p>
+            
+            <div class="auth-form">
+                <h2 id="auth-form-title">Accedi</h2>
+                
+                <form id="auth-form">
+                    <div class="form-group">
+                        <label for="email">Email</label>
+                        <input type="email" id="email" required placeholder="tua@email.com">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" id="password" required placeholder="••••••••">
+                    </div>
+                    
+                    <div class="form-group" id="username-group" style="display: none;">
+                        <label for="username">Username</label>
+                        <input type="text" id="username" placeholder="NomeUtente">
+                    </div>
+                    
+                    <button type="submit" class="btn-primary" id="auth-submit">Accedi</button>
+                </form>
+                
+                <p class="auth-toggle">
+                    <span id="auth-toggle-text">Non hai un account?</span>
+                    <a href="#" id="auth-toggle-link">Registrati</a>
+                </p>
+                
+                <div id="auth-message" class="auth-message"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Schermata Principale (Dashboard) -->
+    <div id="dashboard-screen" class="screen">
+        <header class="game-header">
+            <h1>Bellum Penumbrum</h1>
+            <div class="user-info">
+                <span id="user-display">Caricamento...</span>
+                <button class="btn-secondary" id="logout-btn">Esci</button>
+            </div>
+        </header>
+        
+        <main class="dashboard-content">
+            <section class="stats-section">
+                <h2>Le tue Statistiche</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-matches">0</span>
+                        <span class="stat-label">Partite</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-wins">0</span>
+                        <span class="stat-label">Vittorie</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-losses">0</span>
+                        <span class="stat-label">Sconfitte</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-winrate">0%</span>
+                        <span class="stat-label">Win Rate</span>
+                    </div>
+                </div>
+            </section>
+            
+            <section class="actions-section">
+                <h2>Azioni</h2>
+                <div class="actions-grid">
+                    <button class="action-card" id="btn-new-deck">
+                        <span class="action-icon">🃏</span>
+                        <span class="action-label">Crea Nuovo Mazzo</span>
+                    </button>
+                    <button class="action-card" id="btn-my-decks">
+                        <span class="action-icon">📚</span>
+                        <span class="action-label">I Miei Mazzi</span>
+                    </button>
+                    <button class="action-card" id="btn-new-match">
+                        <span class="action-icon">⚔️</span>
+                        <span class="action-label">Nuova Partita</span>
+                    </button>
+                    <button class="action-card" id="btn-match-history">
+                        <span class="action-icon">📜</span>
+                        <span class="action-label">Storico Partite</span>
+                    </button>
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <!-- Schermata di Gioco -->
+    <div id="game-screen" class="screen">
+        <header class="game-header">
+            <div class="game-info">
+                <span id="game-turn-info">Turno 1 - Fase Principale</span>
+                <span id="game-mana-info">Mana: 0/6</span>
+            </div>
+            <button class="btn-secondary" id="btn-forfeit">Abbandona</button>
+        </header>
+        
+        <main class="game-board">
+            <!-- Riga IA (0) -->
+            <div class="board-row" id="row-ia">
+                <div class="cell" data-row="0" data-col="0"></div>
+                <div class="cell" data-row="0" data-col="1"></div>
+                <div class="cell" data-row="0" data-col="2"></div>
+            </div>
+            
+            <!-- Riga Centrale (1) -->
+            <div class="board-row" id="row-center">
+                <div class="cell" data-row="1" data-col="0"></div>
+                <div class="cell" data-row="1" data-col="1"></div>
+                <div class="cell" data-row="1" data-col="2"></div>
+            </div>
+            
+            <!-- Riga Giocatore (2) -->
+            <div class="board-row" id="row-player">
+                <div class="cell" data-row="2" data-col="0"></div>
+                <div class="cell" data-row="2" data-col="1"></div>
+                <div class="cell" data-row="2" data-col="2"></div>
+            </div>
+        </main>
+        
+        <aside class="game-sidebar">
+            <div class="hand-section">
+                <h3>La tua mano</h3>
+                <div class="card-hand" id="player-hand">
+                    <!-- Carte inserite dinamicamente -->
+                </div>
+            </div>
+            
+            <div class="controls-section">
+                <button class="btn-primary" id="btn-end-turn">Fine Turno</button>
+                <button class="btn-secondary" id="btn-undo">Annulla</button>
+            </div>
+            
+            <div class="graveyard-section">
+                <h3>Cimitero</h3>
+                <div class="graveyard-pile" id="player-graveyard">
+                    <span class="graveyard-count">0</span>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Popup per Istantanei -->
+        <div id="instant-popup" class="popup-overlay" style="display: none;">
+            <div class="popup-content">
+                <h3>Evento in corso!</h3>
+                <p id="instant-event-description">L'avversario sta per attaccare...</p>
+                <div class="popup-actions">
+                    <button class="btn-primary" id="btn-play-instant">Gioca Istantaneo</button>
+                    <button class="btn-secondary" id="btn-pass">Passa</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Popup per Selezione Bersaglio -->
+        <div id="target-popup" class="popup-overlay" style="display: none;">
+            <div class="popup-content">
+                <h3>Seleziona un bersaglio</h3>
+                <p id="target-description">Scegli una creatura sulla scacchiera</p>
+                <button class="btn-secondary" id="btn-cancel-target">Annulla</button>
+            </div>
+        </div>
+        
+        <!-- Popup Lovecraftiano Anti-Loop -->
+        <div id="lovecraft-popup" class="popup-overlay" style="display: none;">
+            <div class="popup-content lovecraft-style">
+                <h3 id="lovecraft-title">L'abisso ti osserva...</h3>
+                <p id="lovecraft-text">Troppi echi si intrecciano. La realtà si lacera.</p>
+                <button class="btn-primary" id="btn-acknowledge-lovecraft">Comprendo</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Schermata Creazione Mazzo -->
+    <div id="deckbuilder-screen" class="screen">
+        <header class="game-header">
+            <h2>Creatore di Mazzi</h2>
+            <button class="btn-secondary" id="btn-back-dashboard">Torna alla Dashboard</button>
+        </header>
+        
+        <main class="deckbuilder-content">
+            <section class="deckbuilder-factions">
+                <h3>Seleziona Fazioni</h3>
+                <div class="faction-selection">
+                    <div class="faction-slot">
+                        <label>Principale:</label>
+                        <select id="faction-primary"></select>
+                    </div>
+                    <div class="faction-slot">
+                        <label>Secondaria:</label>
+                        <select id="faction-secondary"></select>
+                    </div>
+                    <div class="faction-slot">
+                        <label>Terziaria (Random):</label>
+                        <select id="faction-tertiary" disabled></select>
+                    </div>
+                </div>
+                <button class="btn-primary" id="btn-generate-deck">Genera Mazzo</button>
+            </section>
+            
+            <section class="deckbuilder-cards">
+                <h3>Carte del Mazzo</h3>
+                <div class="deck-list" id="deck-list">
+                    <!-- Carte inserite dinamicamente -->
+                </div>
+                <div class="deck-stats">
+                    <span>Mana Curve: <span id="deck-mana-curve">-</span></span>
+                    <span>Carte: <span id="deck-card-count">0/10</span></span>
+                </div>
+            </section>
+            
+            <section class="deckbuilder-extra">
+                <h3>Extra Deck (Mostrissimi)</h3>
+                <div class="extra-deck-list" id="extra-deck-list">
+                    <!-- Mostrissimi inseriti dinamicamente -->
+                </div>
+            </section>
+        </main>
+    </div>
+    
+    <!-- Modale di Conferma -->
+    <div id="confirm-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <h3 id="modal-title">Conferma</h3>
+            <p id="modal-message">Sei sicuro?</p>
+            <div class="modal-actions">
+                <button class="btn-primary" id="modal-confirm">Conferma</button>
+                <button class="btn-secondary" id="modal-cancel">Annulla</button>
+            </div>
+        </div>
+    </div>
+    
+    <script type="module" src="app.js"></script>
+</body>
+</html>
