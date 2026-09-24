@@ -11,6 +11,7 @@
     <noscript>Bellum Penumbrum richiede JavaScript per funzionare.</noscript>
 
     <main class="app-shell">
+      <!-- SCHERMATA DI LOGIN -->
       <section id="auth-screen" class="screen auth-screen" aria-labelledby="auth-title">
         <div class="auth-card panel">
           <p class="eyebrow">Bellum Penumbrum</p>
@@ -23,11 +24,28 @@
           <form id="login-form" class="form-stack" novalidate>
             <label>
               <span>Nome utente</span>
-              <input id="login-username" name="username" type="text" autocomplete="username" minlength="2" maxlength="32" required placeholder="francesco" />
+              <input
+                id="login-username"
+                name="username"
+                type="text"
+                autocomplete="username"
+                minlength="2"
+                maxlength="32"
+                required
+                placeholder="francesco"
+              />
             </label>
             <label>
               <span>Password</span>
-              <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" required placeholder="••••••••" />
+              <input
+                id="login-password"
+                name="password"
+                type="password"
+                autocomplete="current-password"
+                minlength="6"
+                required
+                placeholder="••••••••"
+              />
             </label>
             <button id="login-button" class="primary-button" type="submit">Accedi</button>
           </form>
@@ -36,6 +54,7 @@
         </div>
       </section>
 
+      <!-- SCHERMATA DI GIOCO (nascosta fino al login) -->
       <section id="game-screen" class="screen game-screen hidden" aria-live="polite">
         <header class="topbar panel">
           <div>
