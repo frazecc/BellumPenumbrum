@@ -1,5 +1,3 @@
-// backend/types.ts
-
 export type MatchStatus = 'not_started' | 'running' | 'finished';
 export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
 
@@ -8,14 +6,14 @@ export type GameState = {
   status: MatchStatus;
   players: [PlayerState, PlayerState];
   current_turn: number;
-  active_player_index: number;
+  active_player_index: 0 | 1;
   phase: TurnPhase;
-  stack: any[];
+  stack: unknown[];
   anti_loop_counter: number;
 };
 
 export type PlayerState = {
-  player_index: number;
+  player_index: 0 | 1;
   user_id: string | null;
   life: number;
   max_mana: number;
@@ -43,23 +41,10 @@ export type BoardCell = {
   auras: BoardCellAura[];
 };
 
-export type BoardCellAura = {
-  card_id: string;
-  instance_id: string;
-};
+export type BoardCellAura = { card_id: string; instance_id: string };
+export type BoardCellFieldSpell = { card_id: string; instance_id: string };
 
-export type BoardCellFieldSpell = {
-  card_id: string;
-  instance_id: string;
-};
-
-export type CardType =
-  | 'monster'
-  | 'mostrissimo'
-  | 'sorcery'
-  | 'instant'
-  | 'terraforma'
-  | 'aura';
+export type CardType = 'monster' | 'mostrissimo' | 'sorcery' | 'instant' | 'terraforma' | 'aura';
 
 export type CardData = {
   id: string;
@@ -74,44 +59,16 @@ export type CardData = {
   subtype: string | null;
   rarity: string;
   effect_text: string | null;
-  effect_json: Record<string, any> | null;
-  effect_on_death_json: Record<string, any> | null;
+  effect_json: Record<string, unknown> | null;
+  effect_on_death_json: Record<string, unknown> | null;
   flavor_text: string | null;
   image_url: string | null;
 };
 
-export type EffectType =
-  | 'draw'
-  | 'damage'
-  | 'damage_creature'
-  | 'heal'
-  | 'discard'
-  | 'discard_random'
-  | 'buff'
-  | 'counter'
-  | 'return_hand'
-  | 'destroy'
-  | 'exile'
-  | 'mill'
-  | 'search_deck'
-  | 'create_token'
-  | 'custom';
-
-export type EffectTarget =
-  | 'self'
-  | 'opponent'
-  | 'any_creature'
-  | 'all_creatures'
-  | 'all_creatures_self'
-  | 'all_creatures_opponent'
-  | 'any_spell'
-  | 'spell'
-  | 'any_card'
-  | 'custom';
-
+export type EffectType = 'draw' | 'damage' | 'damage_creature' | 'heal' | 'discard' | 'discard_random' | 'buff' | 'counter' | 'return_hand' | 'destroy' | 'exile' | 'mill' | 'search_deck' | 'create_token' | 'custom';
+export type EffectTarget = 'self' | 'opponent' | 'any_creature' | 'all_creatures' | 'all_creatures_self' | 'all_creatures_opponent' | 'any_spell' | 'spell' | 'any_card' | 'custom';
 export type EffectStat = 'attack' | 'hp';
 export type EffectDuration = 'turn' | 'permanent';
-export type EffectTiming = 'on_play' | 'instant' | 'on_death' | 'upkeep' | 'end';
 
 export type EffectDefinition = {
   effect_id?: string;
@@ -122,16 +79,16 @@ export type EffectDefinition = {
   target_player_index?: number;
   stat?: EffectStat;
   duration?: EffectDuration;
-  timing?: EffectTiming;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 export type MatchLogEntry = {
-  turn: number;
-  phase: TurnPhase;
-  player_index: number;
+  turn?: number;
+  phase?: TurnPhase;
+  player_index?: number;
   action_type: string;
   card_id?: string;
+  attacker_card_id?: string;
   target_card_id?: string;
   target_player_index?: number;
   amount?: number;
@@ -148,11 +105,10 @@ export type PlayCardOptions = {
   position?: { row: number; col: number };
   targetCardId?: string;
   targetPlayerIndex?: number;
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 export type AttackPosition = { row: number; col: number };
-
 export type AttackTarget =
-  | { type: 'creature'; ownerIndex: number; position: AttackPosition }
-  | { type: 'player'; playerIndex: number };
+  | { type: 'creature'; ownerIndex: 0 | 1; position: AttackPosition }
+  | { type: 'player'; playerIndex: 0 | 1 };
