@@ -1,6 +1,6 @@
 // js/game.js
 
-const API_BASE = 'https://bellum-api.onrender.com'; // SOSTITUISCI con il tuo dominio
+const API_BASE = 'https://bellum-penumbrum-api.onrender.com'; // SOSTITUISCI con il tuo dominio
 
 let matchId = null;
 let gameState = null;
