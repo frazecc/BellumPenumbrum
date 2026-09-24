@@ -1,0 +1,187 @@
+* {
+  box-sizing: border-box;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #0b0f19;
+  color: #e5e7eb;
+}
+
+header {
+  padding: 1rem;
+  background: #111827;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+#player-info {
+  display: flex;
+  gap: 1rem;
+}
+
+main {
+  padding: 1rem;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+h2 {
+  margin: 1rem 0 0.5rem;
+  font-size: 1.1rem;
+  color: #9ca3af;
+}
+
+#opponent-life-mana {
+  margin-bottom: 0.5rem;
+  font-size: 0.95rem;
+  color: #d1d5db;
+}
+
+#opponent-board,
+#player-board {
+  display: grid;
+  grid-template-rows: repeat(3, 100px);
+  gap: 8px;
+  margin-bottom: 1rem;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.cell {
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  position: relative;
+  cursor: pointer;
+}
+
+.cell.selected {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px #60a5fa inset;
+}
+
+.cell.target {
+  border-color: #f87171;
+  box-shadow: 0 0 0 2px #f87171 inset;
+}
+
+.card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  text-align: center;
+  padding: 4px;
+  background: #111827;
+  border-radius: 6px;
+  user-select: none;
+}
+
+.card .name {
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.card .stats {
+  font-weight: bold;
+}
+
+.card.tired {
+  opacity: 0.6;
+}
+
+.card.selected {
+  border: 2px solid #60a5fa;
+}
+
+.card.target {
+  border: 2px solid #f87171;
+}
+
+#hand-cards {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 1.5rem;
+}
+
+.hand-card {
+  width: 140px;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hand-card .name {
+  font-weight: bold;
+  font-size: 0.85rem;
+}
+
+.hand-card .cost {
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.hand-card .effect {
+  font-size: 0.75rem;
+  color: #d1d5db;
+}
+
+.hand-card.selected {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px #60a5fa;
+}
+
+#log-list {
+  max-height: 200px;
+  overflow-y: auto;
+  background: #111827;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 0.8rem;
+}
+
+#log-list div {
+  margin-bottom: 4px;
+}
+
+#controls {
+  margin-top: 1rem;
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+button:disabled {
+  background: #6b7280;
+  cursor: not-allowed;
+}
