@@ -1,121 +1,91 @@
+// auth.js - Login per Bellum Penumbrum (versione test con hash finto)
+
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
-export const SUPABASE_URL = 'https://dgsqxnmrjfvklnjliplh.supabase.co';
-export const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_ZwwwsHnjEWNbe2CnDKsTSA_8ljXZlOG';
-export const LOCAL_EMAIL_DOMAIN = '@test.local';
+// Sostituisci con i tuoi valori reali di Supabase
+const SUPABASE_URL = 'https://YOUR_PROJECT_ID.supabase.co';
+const SUPABASE_ANON_KEY = 'YOUR_ANON_KEY';
 
-export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: false,
-  },
-});
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-function setMessage(message = '', kind = '') {
-  const element = document.getElementById('auth-message');
-  if (!element) return;
-  element.textContent = message;
-  element.className = `form-message ${kind}`.trim();
-}
+// Hash finto usato per tutti gli utenti di prova
+const FAKE_PASSWORD_HASH = '$2a$10$fakehash';
 
-export function usernameToLocalEmail(username) {
-  const normalized = String(username)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '');
+document.addEventListener('DOMContentLoaded', () => {
+  const form = document.getElementById('login-form');
+  const errorEl = document.getElementById('login-error');
 
-  if (normalized.length < 2) {
-    throw new Error('Il nome utente deve contenere almeno 2 caratteri validi.');
+  if (!form) {
+    console.warn('Nessun form#login-form trovato nella pagina.');
+    return;
   }
 
-  return `${normalized}${LOCAL_EMAIL_DOMAIN}`;
-}
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
 
-export function usernameFromEmail(email = '') {
-  return String(email).toLowerCase().endsWith(LOCAL_EMAIL_DOMAIN)
-    ? String(email).slice(0, -LOCAL_EMAIL_DOMAIN.length)
-    : String(email);
-}
+    if (errorEl) {
+      errorEl.textContent = '';
+      errorEl.style.display = 'none';
+    }
 
-export async function getAccessToken() {
-  const { data, error } = await supabase.auth.getSession();
-  if (error) throw error;
-  return data.session?.access_token ?? null;
-}
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
 
-export async function getCurrentUser() {
-  const { data, error } = await supabase.auth.getUser();
-  if (error) return null;
-  return data.user ?? null;
-}
+    const username = (usernameInput?.value || '').trim();
+    const password = (passwordInput?.value || '').trim();
 
-export async function signOut() {
-  const { error } = await supabase.auth.signOut();
-  if (error) throw error;
-}
+    if (!username || !password) {
+      if (errorEl) {
+        errorEl.textContent = 'Inserisci nome utente e password.';
+        errorEl.style.display = 'block';
+      }
+      return;
+    }
 
-async function signInWithLocalUsername(username, password) {
-  const email = usernameToLocalEmail(username);
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
-  if (!data.session || !data.user) throw new Error('Accesso non completato.');
-  return data;
-}
+    try {
+      // Cerca l'utente in public.users
+      const { data: user, error } = await supabase
+        .from('users')
+        .select('id, username, email, password_hash')
+        .eq('username', username)
+        .single();
 
-function showGame() {
-  document.getElementById('auth-screen')?.classList.add('hidden');
-  document.getElementById('game-screen')?.classList.remove('hidden');
-}
+      if (error || !user) {
+        if (errorEl) {
+          errorEl.textContent = 'Nome utente o password errati.';
+          errorEl.style.display = 'block';
+        }
+        return;
+      }
 
-function showAuth() {
-  document.getElementById('game-screen')?.classList.add('hidden');
-  document.getElementById('auth-screen')?.classList.remove('hidden');
-}
+      // Confronto "finto" della password (solo per test)
+      // Accetta qualsiasi password non vuota se password_hash è quello finto
+      const isPasswordOk =
+        user.password_hash &&
+        user.password_hash.startsWith(FAKE_PASSWORD_HASH) &&
+        password.length > 0;
 
-async function handleLogin(event) {
-  event.preventDefault();
+      if (!isPasswordOk) {
+        if (errorEl) {
+          errorEl.textContent = 'Nome utente o password errati.';
+          errorEl.style.display = 'block';
+        }
+        return;
+      }
 
-  const usernameInput = document.getElementById('login-username');
-  const passwordInput = document.getElementById('login-password');
-  const button = document.getElementById('login-button');
+      // Login OK: salva un token semplice in localStorage
+      const sessionToken = `session_${user.id}_${Date.now()}`;
+      localStorage.setItem('bp_session', sessionToken);
+      localStorage.setItem('bp_username', user.username);
 
-  const username = usernameInput?.value ?? '';
-  const password = passwordInput?.value ?? '';
-
-  try {
-    button.disabled = true;
-    setMessage('Accesso in corso…');
-    await signInWithLocalUsername(username, password);
-    setMessage('');
-    showGame();
-    window.dispatchEvent(new CustomEvent('bellum:auth-ready'));
-  } catch (error) {
-    setMessage(error instanceof Error ? error.message : 'Impossibile effettuare l’accesso.', 'error');
-  } finally {
-    button.disabled = false;
-  }
-}
-
-async function bootstrapAuth() {
-  document.getElementById('login-form')?.addEventListener('submit', handleLogin);
-
-  const user = await getCurrentUser();
-  if (user) {
-    showGame();
-    window.dispatchEvent(new CustomEvent('bellum:auth-ready'));
-  } else {
-    showAuth();
-  }
-
-  supabase.auth.onAuthStateChange((_event, session) => {
-    if (session?.user) {
-      showGame();
-      window.dispatchEvent(new CustomEvent('bellum:auth-ready'));
-    } else {
-      showAuth();
+      // Reindirizza alla pagina del gioco (adatta il nome file se necessario)
+      window.location.href = 'game.html';
+    } catch (err) {
+      console.error('Errore durante il login:', err);
+      if (errorEl) {
+        errorEl.textContent = 'Errore di connessione al server. Riprova più tardi.';
+        errorEl.style.display = 'block';
+      }
     }
   });
-}
-
-bootstrapAuth();
+});
