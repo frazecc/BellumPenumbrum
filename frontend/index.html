@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <title>Bellum Penumbrum</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Bellum Penumbrum</h1>
+    <div id="player-info">
+      <span>Vita: <strong id="player-life">20</strong></span>
+      <span>Mana: <strong id="player-mana">0/0</strong></span>
+    </div>
+  </header>
+
+  <main>
+    <section id="opponent-board-section">
+      <h2>Avversario</h2>
+      <div id="opponent-life-mana">
+        Vita: <strong id="opponent-life">20</strong>
+      </div>
+      <div id="opponent-board"></div>
+    </section>
+
+    <section id="player-board-section">
+      <h2>Giocatore</h2>
+      <div id="player-board"></div>
+    </section>
+
+    <section id="hand">
+      <h2>Mano</h2>
+      <div id="hand-cards"></div>
+    </section>
+
+    <section id="logs">
+      <h2>Log partita</h2>
+      <div id="log-list"></div>
+    </section>
+
+    <section id="controls">
+      <button id="btn-next-turn">Avanza turno</button>
+      <button id="btn-end-turn">Fine turno</button>
+      <button id="btn-attack" disabled>Attacca</button>
+    </section>
+  </main>
+
+  <script src="js/game.js"></script>
+</body>
+</html>
