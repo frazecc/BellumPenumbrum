@@ -285,7 +285,7 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   const onPlay = effects(card.effect_json);
   const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
   if (card.card_type === 'instant' && s.active_player_index !== p) throw new Error('Le finestre reattive non sono ancora disponibili');
-  if (card.card_type === 'instant' && effects(card.effect_json).some(e => e.type === 'counter')) throw new Error('Contromagia richiede una Stregoneria avversaria dichiarata');
+  if (card.card_type === 'instant' && onPlay.some(e => String(e.type) === 'counter')) throw new Error('Contromagia richiede una Stregoneria avversaria dichiarata');
   if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
   for (const effect of onPlay.filter(e => e.target === 'any_creature' || e.type === 'return_hand')) {
     const candidates = eligible(s, p, effect);
