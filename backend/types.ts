@@ -1,34 +1,9 @@
 export type PlayerIndex = 0 | 1;
-
 export type MatchStatus = 'not_started' | 'running' | 'finished';
 export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
-
-export type CardType =
-  | 'monster'
-  | 'mostrissimo'
-  | 'sorcery'
-  | 'instant'
-  | 'terraforma'
-  | 'aura';
-
-export type EffectType =
-  | 'draw'
-  | 'damage'
-  | 'heal'
-  | 'discard'
-  | 'return_hand'
-  | 'destroy'
-  | 'buff'
-  | 'custom';
-
-export type EffectTarget =
-  | 'self'
-  | 'opponent'
-  | 'any_creature'
-  | 'all_creatures'
-  | 'all_creatures_self'
-  | 'all_creatures_opponent';
-
+export type CardType = 'monster' | 'mostrissimo' | 'sorcery' | 'instant' | 'terraforma' | 'aura';
+export type EffectType = 'draw' | 'damage' | 'damage_creature' | 'heal' | 'discard' | 'return_hand' | 'destroy' | 'buff' | 'custom';
+export type EffectTarget = 'self' | 'opponent' | 'any_creature' | 'all_creatures' | 'all_creatures_self' | 'all_creatures_opponent';
 export type EffectDefinition = {
   type: EffectType;
   amount?: number;
@@ -36,7 +11,6 @@ export type EffectDefinition = {
   timing?: 'on_play' | 'instant' | 'on_death';
   effect_id?: string;
 };
-
 export type CardData = {
   id: string;
   name: string;
@@ -55,22 +29,9 @@ export type CardData = {
   flavor_text: string | null;
   image_url: string | null;
 };
-
-export type CardInstance = {
-  instance_id: string;
-  card_id: string;
-};
-
-export type BoardCellAura = {
-  instance_id: string;
-  card_id: string;
-};
-
-export type BoardCellFieldSpell = {
-  instance_id: string;
-  card_id: string;
-};
-
+export type CardInstance = { instance_id: string; card_id: string };
+export type BoardCellAura = { instance_id: string; card_id: string };
+export type BoardCellFieldSpell = { instance_id: string; card_id: string };
 export type BoardCell = {
   instance_id: string;
   card_id: string;
@@ -81,15 +42,13 @@ export type BoardCell = {
   tired: boolean;
   auras: BoardCellAura[];
 };
-
 export type SharedBoard = {
   rows: [
     [BoardCell | null, BoardCell | null, BoardCell | null],
     [BoardCell | null, BoardCell | null, BoardCell | null],
-    [BoardCell | null, BoardCell | null, BoardCell | null],
+    [BoardCell | null, BoardCell | null, BoardCell | null]
   ];
 };
-
 export type PlayerState = {
   player_index: PlayerIndex;
   user_id: string | null;
@@ -103,27 +62,9 @@ export type PlayerState = {
   color_counters: Record<string, number>;
   field_spell: BoardCellFieldSpell | null;
 };
-
-export type Position = {
-  row: number;
-  col: number;
-};
-
-export type AttackTarget =
-  | {
-      type: 'creature';
-      position: Position;
-    }
-  | {
-      type: 'player';
-      playerIndex: PlayerIndex;
-    };
-
-export type PlayCardOptions = {
-  position?: Position;
-  targetInstanceId?: string;
-};
-
+export type Position = { row: number; col: number };
+export type AttackTarget = { type: 'creature'; position: Position } | { type: 'player'; playerIndex: PlayerIndex };
+export type PlayCardOptions = { position?: Position; targetInstanceId?: string };
 export type GameState = {
   state_version: 2;
   match_id: string;
@@ -136,7 +77,6 @@ export type GameState = {
   anti_loop_counter: number;
   winner_index: PlayerIndex | null;
 };
-
 export type MatchLogEntry = {
   turn: number;
   phase: TurnPhase;

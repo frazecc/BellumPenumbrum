@@ -80,6 +80,19 @@ function locate(s: GameState, id: string) {
   }
   throw new Error('Creatura bersaglio non presente sulla plancia');
 }
+// Bersagli degli ETB: i danni alle creature colpiscono soltanto gli avversari;
+// le cure soltanto i propri alleati; il rimbalzo ammette entrambi.
+function eligible(s: GameState, owner: PlayerIndex, effect: EffectDefinition) {
+  if (effect.type === 'damage' || effect.type === 'damage_creature') return units(s, other(owner));
+  if (effect.type === 'heal') return units(s, owner);
+  return [...units(s, 0), ...units(s, 1)];
+}
+function chosenTarget(s: GameState, owner: PlayerIndex, effect: EffectDefinition, id: string | null) {
+  if (!id) return null;
+  const selected = locate(s, id);
+  if (!eligible(s, owner, effect).some(x => x.cell.instance_id === id)) throw new Error('Bersaglio non valido per questo effetto');
+  return selected;
+}
 async function clearLoop(id: string, s: GameState) {
   for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
     const cell = s.board.rows[row][col];
@@ -98,13 +111,23 @@ async function destroy(id: string, s: GameState, p: Position, killer: PlayerInde
   for (const effect of effects(card.effect_on_death_json)) {
     s.anti_loop_counter++;
     if (s.anti_loop_counter > 20) { await clearLoop(id, s); return; }
-    await resolve(id, s, cell.owner_index, killer, card, effect, null);
+    await resolve(id, s, cell.owner_index, killer, card, effect, null, false);
   }
 }
-async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: PlayerIndex, card: CardData, effect: EffectDefinition, targetId: string | null) {
+async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: PlayerIndex, card: CardData, effect: EffectDefinition, targetId: string | null, etb: boolean) {
   const n = Number(effect.amount ?? 1);
   if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Quantità effetto non valida');
   const target = effect.target ?? 'self';
+  const needsCreature = target === 'any_creature' || effect.type === 'return_hand';
+  if (needsCreature) {
+    const options = eligible(s, owner, effect);
+    if (etb && options.length === 0) {
+      await log(id, s, owner, 'etb_no_target', `${card.name} entra in campo: nessun bersaglio valido, l’effetto ETB non si attiva.`, { card_id: card.id });
+      return;
+    }
+    if (options.length && !targetId) throw new Error('Seleziona un bersaglio valido per l’effetto');
+    if (targetId) chosenTarget(s, owner, effect, targetId);
+  }
   if (effect.type === 'draw') {
     const p = target === 'opponent' ? opponent : owner;
     const count = draw(s.players[p], n);
@@ -119,21 +142,23 @@ async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: P
     await log(id, s, owner, 'effect_discard', `${card.name}: ${label(p)} scarta ${count} carta/e.`);
   } else if (effect.type === 'heal') {
     if (target === 'any_creature') {
-      if (!targetId) throw new Error('Seleziona una creatura da curare');
-      const c = locate(s, targetId).cell; c.hp = Math.min(c.max_hp, c.hp + n);
+      const c = chosenTarget(s, owner, effect, targetId)?.cell;
+      if (!c) throw new Error('Seleziona una creatura alleata da curare');
+      c.hp = Math.min(c.max_hp, c.hp + n);
     } else if (target.startsWith('all_creatures')) {
       const owners = target === 'all_creatures_opponent' ? [opponent] : target === 'all_creatures_self' || target === 'all_creatures' ? [owner] : [owner, opponent];
       for (const p of owners) for (const { cell } of units(s, p)) cell.hp = Math.min(cell.max_hp, cell.hp + n);
     } else s.players[target === 'opponent' ? opponent : owner].life += n;
     await log(id, s, owner, 'effect_heal', `${card.name}: cura ${n}.`);
-  } else if (effect.type === 'damage') {
-    if (target !== 'any_creature' || !targetId) throw new Error('Questo effetto richiede una creatura bersaglio');
-    const { cell, position } = locate(s, targetId); cell.hp -= n;
-    await log(id, s, owner, 'effect_damage', `${card.name}: infligge ${n} danno/i.`);
-    if (cell.hp <= 0) await destroy(id, s, position, owner);
+  } else if (effect.type === 'damage' || effect.type === 'damage_creature') {
+    if (target !== 'any_creature' || !targetId) throw new Error('Questo effetto richiede una creatura avversaria');
+    const found = chosenTarget(s, owner, effect, targetId)!;
+    found.cell.hp -= n;
+    await log(id, s, owner, 'effect_damage', `${card.name}: infligge ${n} danno/i a una creatura avversaria.`, { target_instance_id: targetId });
+    if (found.cell.hp <= 0) await destroy(id, s, found.position, owner);
   } else if (effect.type === 'return_hand') {
     if (!targetId) throw new Error('Seleziona una creatura bersaglio');
-    const { cell, position } = locate(s, targetId);
+    const { cell, position } = chosenTarget(s, owner, effect, targetId)!;
     put(s, position, null); s.players[cell.owner_index].hand.push(instance(cell));
     s.players[cell.owner_index].graveyard.push(...cell.auras);
     await log(id, s, owner, 'effect_return_hand', `${card.name}: una creatura torna in mano.`);
@@ -198,10 +223,23 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   }
   if (card.card_type === 'terraforma' && owner.field_spell) throw new Error('Una Terraforma è già attiva');
   if (card.card_type === 'aura' && !options.targetInstanceId) throw new Error('Seleziona una creatura per l’Aura');
-  if (targeted(card) && !options.targetInstanceId) throw new Error('Seleziona una creatura bersaglio');
-  if (options.targetInstanceId) locate(s, options.targetInstanceId);
-  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'return_hand']);
-  if (effects(card.effect_json).some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
+  const onPlay = effects(card.effect_json);
+  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand']);
+  if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
+  // Prima di cambiare stato, valida il bersaglio rispetto alla plancia attuale.
+  // ETB senza bersagli validi: l'evocazione rimane lecita; la risoluzione annoterà il mancato effetto.
+  for (const effect of onPlay.filter(e => e.target === 'any_creature' || e.type === 'return_hand')) {
+    const candidates = eligible(s, p, effect);
+    if (options.targetInstanceId) {
+      if (!candidates.some(x => x.cell.instance_id === options.targetInstanceId)) throw new Error('Bersaglio non valido per questo effetto');
+    } else if (candidates.length > 0 && !creature) {
+      throw new Error('Seleziona una creatura bersaglio');
+    } else if (candidates.length > 0 && creature) {
+      // Una cura ETB può scegliere il mostro appena evocato se non esistono ancora alleati.
+      const selfHeal = effect.type === 'heal' && candidates.length === 0;
+      if (!selfHeal) throw new Error('Seleziona una creatura bersaglio per l’ETB');
+    } else if (!creature) throw new Error('Questa magia richiede una creatura bersaglio');
+  }
   const played = owner.hand.splice(i, 1)[0]; owner.current_mana -= card.mana_cost;
   owner.color_counters[card.faction_code] = (owner.color_counters[card.faction_code] ?? 0) + 1;
   if (creature) {
@@ -210,7 +248,11 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   else if (card.card_type === 'aura') locate(s, options.targetInstanceId!).cell.auras.push(played);
   else owner.graveyard.push(played);
   await log(id, s, p, 'play_card', `${label(p)} ${p === 1 ? 'giochi' : 'gioca'} ${card.name}.`, { card_id: card.id, instance_id: played.instance_id, position: options.position ?? null });
-  for (const e of effects(card.effect_json)) await resolve(id, s, p, other(p), card, e, options.targetInstanceId ?? null);
+  for (const effect of onPlay) {
+    // Se la cura ETB non aveva alleati prima dell'evocazione, il nuovo Mostro è l'unico bersaglio.
+    const resolvedTarget = creature && effect.type === 'heal' && effect.target === 'any_creature' && !options.targetInstanceId && units(s, p).length === 1 ? played.instance_id : options.targetInstanceId ?? null;
+    await resolve(id, s, p, other(p), card, effect, resolvedTarget, creature);
+  }
   await saveGameState(id, s); return s;
 }
 export async function moveCreature(id: string, p: PlayerIndex, from: Position, to: Position): Promise<GameState> {
@@ -270,11 +312,12 @@ async function aiTurn(id: string) {
     const free = [0, 1, 2].filter(col => !s.board.rows[0][col]);
     if (free.length && s.players[0].hand.length) {
       const cards = await Promise.all(s.players[0].hand.map(async c => ({ instance: c, card: await getCardData(c.card_id) })));
-      const choices = cards.filter(x => x.card.card_type === 'monster' && x.card.mana_cost <= s.players[0].current_mana && effects(x.card.effect_json).every(e => ['draw', 'discard', 'heal', 'damage', 'return_hand'].includes(e.type)));
-      const choice = choices.find(x => !targeted(x.card)) ?? choices.find(x => targeted(x.card) && units(s, 1).length);
+      const choices = cards.filter(x => x.card.card_type === 'monster' && x.card.mana_cost <= s.players[0].current_mana && effects(x.card.effect_json).every(e => ['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand'].includes(e.type)));
+      const choice = choices.find(x => !targeted(x.card)) ?? choices.find(x => effects(x.card.effect_json).every(e => (e.type === 'damage' || e.type === 'damage_creature') && e.target === 'any_creature' && units(s, 1).length === 0)) ?? choices.find(x => targeted(x.card) && units(s, 1).length);
       if (choice) {
         const options: PlayCardOptions = { position: { row: 0, col: free[0] } };
-        if (targeted(choice.card)) options.targetInstanceId = units(s, 1)[0].cell.instance_id;
+        const effect = effects(choice.card.effect_json).find(e => e.target === 'any_creature' || e.type === 'return_hand');
+        if (effect && eligible(s, 0, effect).length) options.targetInstanceId = eligible(s, 0, effect)[0].cell.instance_id;
         await playCard(id, 0, choice.instance.instance_id, options); continue;
       }
     }
