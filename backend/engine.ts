@@ -1,1777 +1,297 @@
 import { randomUUID } from 'node:crypto';
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import type {
-  AttackTarget,
-  BoardCell,
-  CardData,
-  CardInstance,
-  EffectDefinition,
-  GameState,
-  MatchLogEntry,
-  PlayerIndex,
-  PlayerState,
-  PlayCardOptions,
-  Position,
-  TurnPhase,
-} from './types.js';
+import { createClient } from '@supabase/supabase-js';
+import type { AttackTarget, BoardCell, CardData, CardInstance, EffectDefinition, GameState, MatchLogEntry, PlayerIndex, PlayerState, PlayCardOptions, Position, TurnPhase } from './types.js';
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
-
-if (!supabaseUrl || !supabaseServiceKey) {
-  throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
-}
-
-const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServiceKey);
-
-const BOARD_SIZE = 3;
-const MANA_CAP = 6;
-const LIFE_TOTAL = 20;
-const MOVE_COST = 1;
-const ANTI_LOOP_LIMIT = 20;
-
-function getPlayer(state: GameState, playerIndex: PlayerIndex): PlayerState {
-  return state.players[playerIndex];
-}
-
-function otherPlayer(playerIndex: PlayerIndex): PlayerIndex {
-  return playerIndex === 0 ? 1 : 0;
-}
-
-function describePlayer(playerIndex: PlayerIndex): string {
-  return playerIndex === 1 ? 'Tu' : 'L’IA';
-}
-
-function playerVerb(playerIndex: PlayerIndex, action: 'reach' | 'draw'): string {
-  if (playerIndex === 1) {
-    return action === 'reach' ? 'raggiungi' : 'peschi';
+const url = process.env.SUPABASE_URL;
+const key = process.env.SUPABASE_SERVICE_KEY;
+if (!url || !key) throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
+const db = createClient(url, key);
+const size = 3;
+const other = (p: PlayerIndex): PlayerIndex => p === 0 ? 1 : 0;
+const label = (p: PlayerIndex) => p === 1 ? 'Tu' : 'L’IA';
+const valid = (p: Position) => Number.isInteger(p.row) && Number.isInteger(p.col) && p.row >= 0 && p.row < size && p.col >= 0 && p.col < size;
+const adjacent = (a: Position, b: Position) => Math.abs(a.row - b.row) + Math.abs(a.col - b.col) === 1;
+const around = (p: Position): Position[] => [{ row: p.row - 1, col: p.col }, { row: p.row + 1, col: p.col }, { row: p.row, col: p.col - 1 }, { row: p.row, col: p.col + 1 }].filter(valid);
+const home = (p: PlayerIndex) => p === 0 ? 0 : 2;
+const allowed = (p: PlayerIndex, row: number) => row !== home(other(p));
+const phaseNumber = (p: TurnPhase) => ({ start: 0, upkeep: 1, main: 2, end: 3 })[p];
+const blank = (): GameState['board'] => ({ rows: [[null, null, null], [null, null, null], [null, null, null]] });
+const at = (s: GameState, p: Position) => s.board.rows[p.row][p.col];
+const put = (s: GameState, p: Position, c: BoardCell | null) => { s.board.rows[p.row][p.col] = c; };
+const units = (s: GameState, owner: PlayerIndex) => {
+  const result: { position: Position; cell: BoardCell }[] = [];
+  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
+    const cell = s.board.rows[row][col];
+    if (cell?.owner_index === owner) result.push({ position: { row, col }, cell });
   }
-
-  return action === 'reach' ? 'raggiunge' : 'pesca';
-}
-
-function isValidPosition(position: Position): boolean {
-  return (
-    Number.isInteger(position.row) &&
-    Number.isInteger(position.col) &&
-    position.row >= 0 &&
-    position.row < BOARD_SIZE &&
-    position.col >= 0 &&
-    position.col < BOARD_SIZE
-  );
-}
-
-function positionsEqual(first: Position, second: Position): boolean {
-  return first.row === second.row && first.col === second.col;
-}
-
-function isOrthogonallyAdjacent(first: Position, second: Position): boolean {
-  const rowDistance = Math.abs(first.row - second.row);
-  const colDistance = Math.abs(first.col - second.col);
-
-  return rowDistance + colDistance === 1;
-}
-
-function phaseToNumber(phase: TurnPhase): number {
-  if (phase === 'start') return 0;
-  if (phase === 'upkeep') return 1;
-  if (phase === 'main') return 2;
-  return 3;
-}
-
-function emptyBoard() {
-  return {
-    rows: [
-      [null, null, null],
-      [null, null, null],
-      [null, null, null],
-    ] as [
-      [BoardCell | null, BoardCell | null, BoardCell | null],
-      [BoardCell | null, BoardCell | null, BoardCell | null],
-      [BoardCell | null, BoardCell | null, BoardCell | null],
-    ],
-  };
-}
-
-function shuffle<T>(items: T[]): T[] {
-  const result = [...items];
-
-  for (let index = result.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
-  }
-
   return result;
+};
+const enemies = (s: GameState, p: Position, owner: PlayerIndex) => around(p).filter(q => at(s, q)?.owner_index === other(owner));
+const instance = (cell: BoardCell): CardInstance => ({ instance_id: cell.instance_id, card_id: cell.card_id });
+const effects = (raw: unknown): EffectDefinition[] => {
+  if (!raw || typeof raw !== 'object') return [];
+  const obj = raw as { effects?: unknown; type?: unknown };
+  return Array.isArray(obj.effects) ? obj.effects.filter(e => e && typeof e === 'object' && 'type' in e) as EffectDefinition[] : obj.type ? [obj as EffectDefinition] : [];
+};
+const targeted = (card: CardData) => effects(card.effect_json).some(e => e.target === 'any_creature' || e.type === 'return_hand');
+const keyword = (card: CardData, name: string) => {
+  const c = card as CardData & { keywords?: unknown; keyword_json?: unknown };
+  const raw = [c.keywords, c.keyword_json, (card.effect_json as { keywords?: unknown } | null)?.keywords];
+  return raw.some(k => Array.isArray(k) && k.some(v => String(v).toLowerCase() === name));
+};
+const draw = (p: PlayerState, n: number) => {
+  let taken = 0;
+  while (taken < n && p.deck.length) { p.hand.push(p.deck.shift()!); taken++; }
+  return taken;
+};
+function shuffle<T>(values: T[]) {
+  const a = [...values];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
 }
-
-function createInstances(cardIds: string[]): CardInstance[] {
-  return cardIds.map((cardId) => ({
-    instance_id: randomUUID(),
-    card_id: cardId,
-  }));
+async function load(id: string): Promise<GameState> {
+  const { data, error } = await db.from('game_state').select('state_json').eq('match_id', id).single();
+  if (error || !data) throw new Error(`Stato partita non trovato: ${error?.message ?? id}`);
+  const s = data.state_json as GameState;
+  if (s.state_version !== 2 || !s.board?.rows) throw new Error('Partita precedente non compatibile: avvia una nuova partita.');
+  return s;
 }
-
-function normalizeInstance(value: unknown): CardInstance | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  if (
-    typeof record.instance_id !== 'string' ||
-    typeof record.card_id !== 'string'
-  ) {
-    return null;
-  }
-
-  return {
-    instance_id: record.instance_id,
-    card_id: record.card_id,
-  };
+export async function saveGameState(id: string, s: GameState) {
+  const { error } = await db.from('game_state').update({ state_json: s, current_turn: s.current_turn, current_phase: phaseNumber(s.phase), last_updated: new Date().toISOString() }).eq('match_id', id);
+  if (error) throw new Error(`Salvataggio partita: ${error.message}`);
 }
-
-function normalizeInstances(value: unknown): CardInstance[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value
-    .map(normalizeInstance)
-    .filter((instance): instance is CardInstance => instance !== null);
+export async function logMatchAction(id: string, entry: MatchLogEntry) {
+  const { error } = await db.from('match_logs').insert({ match_id: id, log_data: entry });
+  if (error) throw new Error(`Log partita: ${error.message}`);
 }
-
-function normalizeBoardCell(value: unknown): BoardCell | null {
-  if (!value || typeof value !== 'object') {
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  if (
-    typeof record.instance_id !== 'string' ||
-    typeof record.card_id !== 'string'
-  ) {
-    return null;
-  }
-
-  const ownerIndex = Number(record.owner_index);
-
-  if (ownerIndex !== 0 && ownerIndex !== 1) {
-    return null;
-  }
-
-  return {
-    instance_id: record.instance_id,
-    card_id: record.card_id,
-    owner_index: ownerIndex,
-    attack: Number(record.attack ?? 0),
-    hp: Number(record.hp ?? 1),
-    max_hp: Number(record.max_hp ?? record.hp ?? 1),
-    tired: Boolean(record.tired),
-    auras: Array.isArray(record.auras)
-      ? record.auras
-          .map(normalizeInstance)
-          .filter((aura): aura is CardInstance => aura !== null)
-      : [],
-  };
+async function log(id: string, s: GameState, owner: number, action: string, description: string, extra: Partial<MatchLogEntry> = {}) {
+  await logMatchAction(id, { turn: s.current_turn, phase: s.phase, player_index: owner, action_type: action, description, ...extra });
 }
-
-function normalizeSharedBoard(value: unknown) {
-  const board = emptyBoard();
-
-  if (!value || typeof value !== 'object') {
-    return board;
-  }
-
-  const record = value as Record<string, unknown>;
-
-  if (!Array.isArray(record.rows)) {
-    return board;
-  }
-
-  for (let row = 0; row < BOARD_SIZE; row += 1) {
-    const sourceRow = record.rows[row];
-
-    if (!Array.isArray(sourceRow)) {
-      continue;
-    }
-
-    for (let col = 0; col < BOARD_SIZE; col += 1) {
-      board.rows[row][col] = normalizeBoardCell(sourceRow[col]);
-    }
-  }
-
-  return board;
+export async function getCardData(id: string): Promise<CardData> {
+  const { data, error } = await db.from('cards').select('id,name,faction_id,card_type,mana_cost,sacrifice_cost,attack,hp,subtype,rarity,effect_text,effect_json,effect_on_death_json,flavor_text,image_url,factions!left(code)').eq('id', id).single();
+  if (error || !data) throw new Error(`Carta non trovata: ${error?.message ?? id}`);
+  const f = Array.isArray(data.factions) ? data.factions[0] : data.factions;
+  return { ...data, faction_code: f && typeof f === 'object' && 'code' in f ? String(f.code) : 'IND' } as CardData;
 }
-
-function normalizeState(rawState: unknown): GameState {
-  if (!rawState || typeof rawState !== 'object') {
-    throw new Error('Stato partita non valido');
+function locate(s: GameState, id: string) {
+  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
+    const cell = s.board.rows[row][col];
+    if (cell?.instance_id === id) return { position: { row, col }, cell };
   }
-
-  const raw = rawState as Record<string, unknown>;
-
-  if (raw.state_version !== 2) {
-    throw new Error(
-      'Questa è una partita della vecchia versione. Crea una nuova partita per usare la plancia tattica.',
-    );
-  }
-
-  if (!Array.isArray(raw.players) || raw.players.length !== 2) {
-    throw new Error('Stato giocatori non valido');
-  }
-
-  const players = raw.players.map((value, index) => {
-    const record =
-      value && typeof value === 'object'
-        ? (value as Record<string, unknown>)
-        : {};
-
-    return {
-      player_index: index as PlayerIndex,
-      user_id: typeof record.user_id === 'string' ? record.user_id : null,
-      life: Number(record.life ?? LIFE_TOTAL),
-      max_mana: Number(record.max_mana ?? 0),
-      current_mana: Number(record.current_mana ?? 0),
-      deck: normalizeInstances(record.deck),
-      hand: normalizeInstances(record.hand),
-      graveyard: normalizeInstances(record.graveyard),
-      extra_deck: normalizeInstances(record.extra_deck),
-      color_counters:
-        record.color_counters &&
-        typeof record.color_counters === 'object' &&
-        !Array.isArray(record.color_counters)
-          ? (record.color_counters as Record<string, number>)
-          : {},
-      field_spell: normalizeInstance(record.field_spell),
-    };
-  }) as [PlayerState, PlayerState];
-
-  const activePlayer = Number(raw.active_player_index);
-
-  if (activePlayer !== 0 && activePlayer !== 1) {
-    throw new Error('Giocatore attivo non valido');
-  }
-
-  return {
-    state_version: 2,
-    match_id: String(raw.match_id),
-    status:
-      raw.status === 'finished'
-        ? 'finished'
-        : raw.status === 'not_started'
-          ? 'not_started'
-          : 'running',
-    players,
-    board: normalizeSharedBoard(raw.board),
-    current_turn: Number(raw.current_turn ?? 1),
-    active_player_index: activePlayer,
-    phase:
-      raw.phase === 'start' ||
-      raw.phase === 'upkeep' ||
-      raw.phase === 'end'
-        ? raw.phase
-        : 'main',
-    anti_loop_counter: Number(raw.anti_loop_counter ?? 0),
-    winner_index:
-      raw.winner_index === 0 || raw.winner_index === 1
-        ? raw.winner_index
-        : null,
-  };
+  throw new Error('Creatura bersaglio non presente sulla plancia');
 }
-
-async function loadState(matchId: string): Promise<GameState> {
-  const { data, error } = await supabase
-    .from('game_state')
-    .select('state_json')
-    .eq('match_id', matchId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Stato partita non trovato: ${error?.message ?? matchId}`);
+async function clearLoop(id: string, s: GameState) {
+  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
+    const cell = s.board.rows[row][col];
+    if (cell) { s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras); s.board.rows[row][col] = null; }
   }
-
-  return normalizeState(data.state_json);
+  for (const p of s.players) { if (p.field_spell) p.graveyard.push(p.field_spell); p.field_spell = null; }
+  await log(id, s, -1, 'anti_loop_cleanup', 'La Penombra divora ogni cosa: venti trigger consecutivi, plancia svuotata.');
 }
-
-export async function saveGameState(
-  matchId: string,
-  state: GameState,
-): Promise<void> {
-  const { error } = await supabase
-    .from('game_state')
-    .update({
-      state_json: state,
-      current_turn: state.current_turn,
-      current_phase: phaseToNumber(state.phase),
-      last_updated: new Date().toISOString(),
-    })
-    .eq('match_id', matchId);
-
-  if (error) {
-    throw new Error(`Impossibile salvare lo stato: ${error.message}`);
-  }
-}
-
-export async function logMatchAction(
-  matchId: string,
-  entry: MatchLogEntry,
-): Promise<void> {
-  const { error } = await supabase
-    .from('match_logs')
-    .insert({
-      match_id: matchId,
-      log_data: entry,
-    });
-
-  if (error) {
-    throw new Error(`Impossibile scrivere il log: ${error.message}`);
-  }
-}
-
-export async function getCardData(cardId: string): Promise<CardData> {
-  const { data, error } = await supabase
-    .from('cards')
-    .select(`
-      id,
-      name,
-      faction_id,
-      card_type,
-      mana_cost,
-      sacrifice_cost,
-      attack,
-      hp,
-      subtype,
-      rarity,
-      effect_text,
-      effect_json,
-      effect_on_death_json,
-      flavor_text,
-      image_url,
-      factions!left(code)
-    `)
-    .eq('id', cardId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Carta non trovata: ${cardId}`);
-  }
-
-  const faction = Array.isArray(data.factions)
-    ? data.factions[0]
-    : data.factions;
-
-  const factionCode =
-    faction && typeof faction === 'object' && 'code' in faction
-      ? String(faction.code)
-      : 'IND';
-
-  return {
-    id: String(data.id),
-    name: String(data.name),
-    faction_id: data.faction_id === null ? null : Number(data.faction_id),
-    faction_code: factionCode,
-    card_type: String(data.card_type) as CardData['card_type'],
-    mana_cost: Number(data.mana_cost ?? 0),
-    sacrifice_cost: Number(data.sacrifice_cost ?? 0),
-    attack: data.attack === null ? null : Number(data.attack),
-    hp: data.hp === null ? null : Number(data.hp),
-    subtype: data.subtype === null ? null : String(data.subtype),
-    rarity: String(data.rarity ?? 'common'),
-    effect_text: data.effect_text === null ? null : String(data.effect_text),
-    effect_json: (data.effect_json ?? null) as EffectDefinition | null,
-    effect_on_death_json: (data.effect_on_death_json ?? null) as EffectDefinition | null,
-    flavor_text: data.flavor_text === null ? null : String(data.flavor_text),
-    image_url: data.image_url === null ? null : String(data.image_url),
-  };
-}
-
-function findBoardCell(
-  state: GameState,
-  instanceId: string,
-): { position: Position; cell: BoardCell } | null {
-  for (let row = 0; row < BOARD_SIZE; row += 1) {
-    for (let col = 0; col < BOARD_SIZE; col += 1) {
-      const cell = state.board.rows[row][col];
-
-      if (cell?.instance_id === instanceId) {
-        return {
-          position: { row, col },
-          cell,
-        };
-      }
-    }
-  }
-
-  return null;
-}
-
-function findOwnedCreatures(state: GameState, ownerIndex: PlayerIndex) {
-  const creatures: Array<{ position: Position; cell: BoardCell }> = [];
-
-  for (let row = 0; row < BOARD_SIZE; row += 1) {
-    for (let col = 0; col < BOARD_SIZE; col += 1) {
-      const cell = state.board.rows[row][col];
-
-      if (cell?.owner_index === ownerIndex) {
-        creatures.push({
-          position: { row, col },
-          cell,
-        });
-      }
-    }
-  }
-
-  return creatures;
-}
-
-function getCell(state: GameState, position: Position): BoardCell | null {
-  if (!isValidPosition(position)) {
-    return null;
-  }
-
-  return state.board.rows[position.row][position.col];
-}
-
-function setCell(
-  state: GameState,
-  position: Position,
-  cell: BoardCell | null,
-): void {
-  if (!isValidPosition(position)) {
-    throw new Error('Posizione della griglia non valida');
-  }
-
-  state.board.rows[position.row][position.col] = cell;
-}
-
-function removeFromHand(player: PlayerState, instanceId: string): CardInstance {
-  const index = player.hand.findIndex(
-    (instance) => instance.instance_id === instanceId,
-  );
-
-  if (index === -1) {
-    throw new Error('La carta selezionata non è nella tua mano');
-  }
-
-  return player.hand.splice(index, 1)[0];
-}
-
-function drawCards(player: PlayerState, amount: number): CardInstance[] {
-  const drawn: CardInstance[] = [];
-
-  for (let index = 0; index < amount; index += 1) {
-    const card = player.deck.shift();
-
-    if (!card) {
-      break;
-    }
-
-    player.hand.push(card);
-    drawn.push(card);
-  }
-
-  return drawn;
-}
-
-function wakeCreatures(state: GameState, playerIndex: PlayerIndex): void {
-  for (const { cell } of findOwnedCreatures(state, playerIndex)) {
-    cell.tired = false;
-  }
-}
-
-function countCreatures(state: GameState, playerIndex: PlayerIndex): number {
-  return findOwnedCreatures(state, playerIndex).length;
-}
-
-function findCreatureTarget(
-  state: GameState,
-  instanceId: string,
-): { owner: PlayerState; position: Position; cell: BoardCell } {
-  const found = findBoardCell(state, instanceId);
-
-  if (!found) {
-    throw new Error('La creatura bersaglio non è sul campo');
-  }
-
-  return {
-    owner: getPlayer(state, found.cell.owner_index),
-    position: found.position,
-    cell: found.cell,
-  };
-}
-
-function sacrificeCreatures(
-  state: GameState,
-  playerIndex: PlayerIndex,
-  amount: number,
-): CardInstance[] {
-  const player = getPlayer(state, playerIndex);
-  const creatures = findOwnedCreatures(state, playerIndex);
-
-  if (creatures.length < amount) {
-    throw new Error('Non ci sono abbastanza creature da sacrificare');
-  }
-
-  const sacrificed = creatures.slice(0, amount).map(({ position, cell }) => {
-    setCell(state, position, null);
-
-    const instance: CardInstance = {
-      instance_id: cell.instance_id,
-      card_id: cell.card_id,
-    };
-
-    player.graveyard.push(instance);
-    return instance;
-  });
-
-  return sacrificed;
-}
-
-async function destroyCreature(
-  matchId: string,
-  state: GameState,
-  position: Position,
-  killerIndex: PlayerIndex | null,
-): Promise<void> {
-  const cell = getCell(state, position);
-
-  if (!cell) {
-    return;
-  }
-
-  const owner = getPlayer(state, cell.owner_index);
-
-  setCell(state, position, null);
-
-  owner.graveyard.push({
-    instance_id: cell.instance_id,
-    card_id: cell.card_id,
-  });
-
+async function destroy(id: string, s: GameState, p: Position, killer: PlayerIndex) {
+  const cell = at(s, p);
+  if (!cell) return;
+  put(s, p, null);
+  s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras);
   const card = await getCardData(cell.card_id);
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: state.phase,
-    player_index: cell.owner_index,
-    action_type: 'creature_destroyed',
-    card_id: card.id,
-    instance_id: cell.instance_id,
-    position,
-    description: `${card.name} viene distrutto e finisce nel cimitero di ${describePlayer(cell.owner_index)}.`,
-  });
-
-  if (!card.effect_on_death_json) {
-    return;
+  await log(id, s, cell.owner_index, 'creature_destroyed', `${card.name} viene distrutto.`, { card_id: card.id, instance_id: cell.instance_id, position: p });
+  for (const effect of effects(card.effect_on_death_json)) {
+    s.anti_loop_counter++;
+    if (s.anti_loop_counter > 20) { await clearLoop(id, s); return; }
+    await resolve(id, s, cell.owner_index, killer, card, effect, null);
   }
-
-  state.anti_loop_counter += 1;
-
-  if (state.anti_loop_counter > ANTI_LOOP_LIMIT) {
-    await clearBoardForAntiLoop(matchId, state);
-    return;
-  }
-
-  await resolveEffect(
-    matchId,
-    state,
-    cell.owner_index,
-    killerIndex ?? otherPlayer(cell.owner_index),
-    card,
-    card.effect_on_death_json,
-    null,
-  );
 }
-
-async function clearBoardForAntiLoop(
-  matchId: string,
-  state: GameState,
-): Promise<void> {
-  for (let row = 0; row < BOARD_SIZE; row += 1) {
-    for (let col = 0; col < BOARD_SIZE; col += 1) {
-      const cell = state.board.rows[row][col];
-
-      if (!cell) {
-        continue;
-      }
-
-      getPlayer(state, cell.owner_index).graveyard.push({
-        instance_id: cell.instance_id,
-        card_id: cell.card_id,
-      });
-
-      state.board.rows[row][col] = null;
-    }
-  }
-
-  state.players[0].field_spell = null;
-  state.players[1].field_spell = null;
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: state.phase,
-    player_index: -1,
-    action_type: 'anti_loop_cleanup',
-    description:
-      'Il ventesimo eco si spezza nel vuoto: la scacchiera viene inghiottita dalla Penombra.',
-  });
-}
-
-async function resolveEffect(
-  matchId: string,
-  state: GameState,
-  controllerIndex: PlayerIndex,
-  opponentIndex: PlayerIndex,
-  sourceCard: CardData,
-  effect: EffectDefinition,
-  targetInstanceId: string | null,
-): Promise<void> {
-  const controller = getPlayer(state, controllerIndex);
-  const opponent = getPlayer(state, opponentIndex);
-  const amount = Math.max(0, Number(effect.amount ?? 1));
+async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: PlayerIndex, card: CardData, effect: EffectDefinition, targetId: string | null) {
+  const n = Number(effect.amount ?? 1);
+  if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Quantità effetto non valida');
   const target = effect.target ?? 'self';
-
   if (effect.type === 'draw') {
-    const recipient = target === 'opponent' ? opponent : controller;
-    const drawn = drawCards(recipient, amount);
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: controllerIndex,
-      action_type: 'effect_draw',
-      card_id: sourceCard.id,
-      amount: drawn.length,
-      description: `${sourceCard.name}: ${describePlayer(recipient.player_index)} ${playerVerb(recipient.player_index, 'draw')} ${drawn.length} carta/e.`,
-    });
-
-    return;
-  }
-
-  if (effect.type === 'discard') {
-    const recipient = target === 'self' ? controller : opponent;
-    let discarded = 0;
-
-    for (
-      let index = 0;
-      index < amount && recipient.hand.length > 0;
-      index += 1
-    ) {
-      const randomIndex = Math.floor(Math.random() * recipient.hand.length);
-      const [discardedCard] = recipient.hand.splice(randomIndex, 1);
-
-      if (discardedCard) {
-        recipient.graveyard.push(discardedCard);
-        discarded += 1;
-      }
+    const p = target === 'opponent' ? opponent : owner;
+    const count = draw(s.players[p], n);
+    await log(id, s, owner, 'effect_draw', `${card.name}: ${p === 1 ? 'peschi' : 'l’IA pesca'} ${count} carta/e.`);
+  } else if (effect.type === 'discard') {
+    const p = target === 'self' ? owner : opponent;
+    let count = 0;
+    while (count < n && s.players[p].hand.length) {
+      const i = Math.floor(Math.random() * s.players[p].hand.length);
+      s.players[p].graveyard.push(s.players[p].hand.splice(i, 1)[0]); count++;
     }
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: controllerIndex,
-      action_type: 'effect_discard',
-      card_id: sourceCard.id,
-      amount: discarded,
-      description: `${sourceCard.name}: ${describePlayer(recipient.player_index)} scarta ${discarded} carta/e.`,
-    });
-
-    return;
-  }
-
-  if (effect.type === 'heal') {
-    if (target === 'all_creatures') {
-      for (const { cell } of findOwnedCreatures(state, controllerIndex)) {
-        cell.hp = Math.min(cell.max_hp, cell.hp + amount);
-      }
-
-      await logMatchAction(matchId, {
-        turn: state.current_turn,
-        phase: state.phase,
-        player_index: controllerIndex,
-        action_type: 'effect_heal_all',
-        card_id: sourceCard.id,
-        amount,
-        description: `${sourceCard.name}: tutte le creature di ${describePlayer(controllerIndex)} recuperano ${amount} HP.`,
-      });
-
-      return;
-    }
-
+    await log(id, s, owner, 'effect_discard', `${card.name}: ${label(p)} scarta ${count} carta/e.`);
+  } else if (effect.type === 'heal') {
     if (target === 'any_creature') {
-      if (!targetInstanceId) {
-        throw new Error('Questa carta richiede una creatura bersaglio');
-      }
-
-      const found = findCreatureTarget(state, targetInstanceId);
-      found.cell.hp = Math.min(found.cell.max_hp, found.cell.hp + amount);
-
-      await logMatchAction(matchId, {
-        turn: state.current_turn,
-        phase: state.phase,
-        player_index: controllerIndex,
-        action_type: 'effect_heal_creature',
-        card_id: sourceCard.id,
-        target_instance_id: targetInstanceId,
-        amount,
-        description: `${sourceCard.name}: una creatura recupera ${amount} HP.`,
-      });
-
-      return;
-    }
-
-    const recipient = target === 'opponent' ? opponent : controller;
-    recipient.life += amount;
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: controllerIndex,
-      action_type: 'effect_heal_player',
-      card_id: sourceCard.id,
-      amount,
-      description: `${sourceCard.name}: ${describePlayer(recipient.player_index)} recupera ${amount} vita.`,
-    });
-
-    return;
+      if (!targetId) throw new Error('Seleziona una creatura da curare');
+      const c = locate(s, targetId).cell; c.hp = Math.min(c.max_hp, c.hp + n);
+    } else if (target.startsWith('all_creatures')) {
+      const owners = target === 'all_creatures_opponent' ? [opponent] : target === 'all_creatures_self' || target === 'all_creatures' ? [owner] : [owner, opponent];
+      for (const p of owners) for (const { cell } of units(s, p)) cell.hp = Math.min(cell.max_hp, cell.hp + n);
+    } else s.players[target === 'opponent' ? opponent : owner].life += n;
+    await log(id, s, owner, 'effect_heal', `${card.name}: cura ${n}.`);
+  } else if (effect.type === 'damage') {
+    if (target !== 'any_creature' || !targetId) throw new Error('Questo effetto richiede una creatura bersaglio');
+    const { cell, position } = locate(s, targetId); cell.hp -= n;
+    await log(id, s, owner, 'effect_damage', `${card.name}: infligge ${n} danno/i.`);
+    if (cell.hp <= 0) await destroy(id, s, position, owner);
+  } else if (effect.type === 'return_hand') {
+    if (!targetId) throw new Error('Seleziona una creatura bersaglio');
+    const { cell, position } = locate(s, targetId);
+    put(s, position, null); s.players[cell.owner_index].hand.push(instance(cell));
+    s.players[cell.owner_index].graveyard.push(...cell.auras);
+    await log(id, s, owner, 'effect_return_hand', `${card.name}: una creatura torna in mano.`);
+  } else {
+    throw new Error(`${card.name}: effetto ${effect.type} non ancora implementato; la carta non può essere giocata.`);
   }
-
-  if (effect.type === 'damage') {
-    if (target !== 'any_creature') {
-      throw new Error('Questo effetto danno richiede una creatura bersaglio');
-    }
-
-    if (!targetInstanceId) {
-      throw new Error('Questa carta richiede una creatura bersaglio');
-    }
-
-    const found = findCreatureTarget(state, targetInstanceId);
-    found.cell.hp -= amount;
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: controllerIndex,
-      action_type: 'effect_damage_creature',
-      card_id: sourceCard.id,
-      target_instance_id: targetInstanceId,
-      amount,
-      description: `${sourceCard.name}: infligge ${amount} danno/i a una creatura.`,
-    });
-
-    if (found.cell.hp <= 0) {
-      await destroyCreature(
-        matchId,
-        state,
-        found.position,
-        controllerIndex,
-      );
-    }
-
-    return;
+}
+async function deck(): Promise<CardInstance[]> {
+  const { data, error } = await db.from('cards').select('id,card_type,mana_cost,is_boss').eq('card_type', 'monster');
+  if (error || !data || data.length < 10) throw new Error('Catalogo Mostri insufficiente');
+  const pool = data.map(c => ({ id: String(c.id), cost: Number(c.mana_cost), boss: Boolean(c.is_boss) }));
+  const low = pool.filter(c => c.cost <= 2), mid = pool.filter(c => c.cost >= 2 && c.cost <= 4), high = pool.filter(c => c.cost >= 5);
+  if (!low.length || !mid.length || !high.length) throw new Error('Costi Mostri non compatibili con il mazzo di test');
+  const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)];
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const boss = pick(high.filter(c => c.boss).length ? high.filter(c => c.boss) : high);
+    const chosen = [boss, pick(low), pick(low), pick(mid), pick(mid), pick(mid), pick(mid)];
+    while (chosen.length < 10) chosen.push(pick(pool));
+    const avg = chosen.reduce((sum, c) => sum + c.cost, 0) / 10;
+    if (avg >= 2.5 && avg <= 4) return shuffle(chosen.map(c => ({ instance_id: randomUUID(), card_id: c.id })));
   }
-
-  if (effect.type === 'return_hand') {
-    if (!targetInstanceId) {
-      throw new Error('Questa carta richiede una creatura bersaglio');
-    }
-
-    const found = findCreatureTarget(state, targetInstanceId);
-
-    setCell(state, found.position, null);
-    found.owner.hand.push({
-      instance_id: found.cell.instance_id,
-      card_id: found.cell.card_id,
-    });
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: controllerIndex,
-      action_type: 'effect_return_hand',
-      card_id: sourceCard.id,
-      target_instance_id: targetInstanceId,
-      description: `${sourceCard.name}: una creatura torna nella mano del proprietario.`,
-    });
-
-    return;
-  }
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: state.phase,
-    player_index: controllerIndex,
-    action_type: 'effect_not_implemented',
-    card_id: sourceCard.id,
-    description: `${sourceCard.name}: effetto "${effect.type}" non ancora implementato.`,
-  });
+  throw new Error('Impossibile generare un mazzo con media mana tra 2,5 e 4');
 }
-
-function isCreatureCard(card: CardData): boolean {
-  return card.card_type === 'monster' || card.card_type === 'mostrissimo';
+function player(index: PlayerIndex, userId: string | null, cards: CardInstance[]): PlayerState {
+  return { player_index: index, user_id: userId, life: 20, max_mana: 0, current_mana: 0, deck: cards, hand: [], graveyard: [], extra_deck: [], color_counters: { CHI: 0, INF: 0, PES: 0, BUL: 0, GRO: 0, CLO: 0, IND: 0 }, field_spell: null };
 }
-
-function requiresTarget(card: CardData): boolean {
-  return Boolean(
-    card.effect_json &&
-      (card.effect_json.target === 'any_creature' ||
-        card.effect_json.type === 'return_hand'),
-  );
-}
-
-function playerHomeRow(playerIndex: PlayerIndex): number {
-  return playerIndex === 0 ? 0 : 2;
-}
-
-function adjacentPositions(position: Position): Position[] {
-  const candidates: Position[] = [
-    { row: position.row - 1, col: position.col },
-    { row: position.row + 1, col: position.col },
-    { row: position.row, col: position.col - 1 },
-    { row: position.row, col: position.col + 1 },
-  ];
-
-  return candidates.filter(isValidPosition);
-}
-
-function adjacentEnemyPositions(
-  state: GameState,
-  position: Position,
-  ownerIndex: PlayerIndex,
-): Position[] {
-  const enemyIndex = otherPlayer(ownerIndex);
-
-  return adjacentPositions(position).filter((candidate) => {
-    const cell = getCell(state, candidate);
-    return cell?.owner_index === enemyIndex;
-  });
-}
-
-async function getGeneratedDeck(): Promise<CardInstance[]> {
-  const { data, error } = await supabase
-    .from('cards')
-    .select('id, mana_cost, card_type')
-    .in('card_type', ['monster', 'sorcery', 'instant', 'terraforma', 'aura'])
-    .order('mana_cost', { ascending: true });
-
-  if (error || !data || data.length < 10) {
-    throw new Error('Il catalogo non contiene abbastanza carte per generare un mazzo');
-  }
-
-  const cards = data.map((card) => ({
-    id: String(card.id),
-    mana_cost: Number(card.mana_cost),
-    card_type: String(card.card_type),
-  }));
-
-  const monsters = cards.filter((card) => card.card_type === 'monster');
-
-  if (monsters.length < 6) {
-    throw new Error('Il catalogo non contiene abbastanza Mostri per una partita di test');
-  }
-
-  const lowCostMonsters = monsters.filter((card) => card.mana_cost <= 2);
-  const midCostMonsters = monsters.filter(
-    (card) => card.mana_cost >= 2 && card.mana_cost <= 4,
-  );
-  const highCostMonsters = monsters.filter((card) => card.mana_cost >= 5);
-
-  const pick = <T>(pool: T[]): T =>
-    pool[Math.floor(Math.random() * pool.length)];
-
-  const selected = [
-    pick(highCostMonsters.length ? highCostMonsters : monsters),
-    pick(lowCostMonsters.length ? lowCostMonsters : monsters),
-    pick(lowCostMonsters.length ? lowCostMonsters : monsters),
-    pick(midCostMonsters.length ? midCostMonsters : monsters),
-    pick(midCostMonsters.length ? midCostMonsters : monsters),
-    pick(midCostMonsters.length ? midCostMonsters : monsters),
-    pick(monsters),
-    pick(monsters),
-    pick(cards),
-    pick(cards),
-  ];
-
-  return createInstances(selected.map((card) => card.id));
-}
-
-function createPlayerState(
-  playerIndex: PlayerIndex,
-  userId: string | null,
-  deck: CardInstance[],
-): PlayerState {
-  return {
-    player_index: playerIndex,
-    user_id: userId,
-    life: LIFE_TOTAL,
-    max_mana: 0,
-    current_mana: 0,
-    deck: shuffle(deck),
-    hand: [],
-    graveyard: [],
-    extra_deck: [],
-    color_counters: {
-      CHI: 0,
-      INF: 0,
-      PES: 0,
-      BUL: 0,
-      GRO: 0,
-      CLO: 0,
-      IND: 0,
-    },
-    field_spell: null,
-  };
-}
-
-export async function createNewMatch(userId: string): Promise<{
-  matchId: string;
-  state: GameState;
-}> {
-  const { data: match, error: matchError } = await supabase
-    .from('matches')
-    .insert({
-      player_id: userId,
-      opponent_type: 'ai',
-      opponent_name: 'IA Bellum Penumbrum',
-      player_won: null,
-      turns_count: 0,
-      duration_seconds: 0,
-    })
-    .select('id')
-    .single();
-
-  if (matchError || !match?.id) {
-    throw new Error(
-      `Impossibile creare la partita: ${matchError?.message ?? 'errore sconosciuto'}`,
-    );
-  }
-
-  const matchId = String(match.id);
-  const [aiDeck, playerDeck] = await Promise.all([
-    getGeneratedDeck(),
-    getGeneratedDeck(),
-  ]);
-
-  const ai = createPlayerState(0, null, aiDeck);
-  const human = createPlayerState(1, userId, playerDeck);
-
-  drawCards(human, 3);
-  drawCards(ai, 4);
-
-  human.max_mana = 1;
-  human.current_mana = 1;
-
-  const state: GameState = {
-    state_version: 2,
-    match_id: matchId,
-    status: 'running',
-    players: [ai, human],
-    board: emptyBoard(),
-    current_turn: 1,
-    active_player_index: 1,
-    phase: 'main',
-    anti_loop_counter: 0,
-    winner_index: null,
-  };
-
-  const { error: stateError } = await supabase
-    .from('game_state')
-    .insert({
-      match_id: matchId,
-      state_json: state,
-      current_turn: state.current_turn,
-      current_phase: phaseToNumber(state.phase),
-      last_updated: new Date().toISOString(),
-    });
-
-  if (stateError) {
-    throw new Error(`Impossibile creare lo stato partita: ${stateError.message}`);
-  }
-
-  await logMatchAction(matchId, {
-    turn: 1,
-    phase: 'start',
-    player_index: -1,
-    action_type: 'match_create',
-    description: 'La partita tattica contro IA Bellum Penumbrum è iniziata.',
-  });
-
-  await logMatchAction(matchId, {
-    turn: 1,
-    phase: 'upkeep',
-    player_index: 1,
-    action_type: 'opening_hand',
-    amount: 3,
-    description: 'Tu inizi la partita con 3 carte e 1 mana.',
-  });
-
-  await logMatchAction(matchId, {
-    turn: 1,
-    phase: 'upkeep',
-    player_index: 0,
-    action_type: 'opening_hand',
-    amount: 4,
-    description: 'L’IA inizia con 4 carte.',
-  });
-
+export async function createNewMatch(userId: string): Promise<{ matchId: string; state: GameState }> {
+  const [aiCards, humanCards] = await Promise.all([deck(), deck()]);
+  const { data, error } = await db.from('matches').insert({ player_id: userId, opponent_type: 'ai', opponent_name: 'IA Bellum Penumbrum', player_won: null, turns_count: 0, duration_seconds: 0 }).select('id').single();
+  if (error || !data) throw new Error(`Creazione partita: ${error?.message ?? 'nessun ID'}`);
+  const matchId = String(data.id);
+  const ai = player(0, null, aiCards), human = player(1, userId, humanCards);
+  draw(ai, 4); draw(human, 3); human.max_mana = human.current_mana = 1;
+  const state: GameState = { state_version: 2, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null };
+  const inserted = await db.from('game_state').insert({ match_id: matchId, state_json: state, current_turn: 1, current_phase: 2, last_updated: new Date().toISOString() });
+  if (inserted.error) throw new Error(`Creazione stato: ${inserted.error.message}`);
+  await log(matchId, state, -1, 'match_create', 'Partita iniziata: tu hai 3 carte e 1 mana; l’IA ha 4 carte.');
   return { matchId, state };
 }
-
-export async function getMatchState(matchId: string): Promise<GameState> {
-  return loadState(matchId);
+export async function getMatchState(id: string) { return load(id); }
+async function finish(id: string, s: GameState, winner: PlayerIndex, reason: string) {
+  s.status = 'finished'; s.phase = 'end'; s.winner_index = winner;
+  const { error } = await db.from('matches').update({ player_won: winner === 1, turns_count: s.current_turn }).eq('id', id);
+  if (error) throw new Error(`Chiusura partita: ${error.message}`);
+  await saveGameState(id, s);
+  await log(id, s, winner, 'match_end', `${winner === 1 ? 'Hai vinto' : 'L’IA ha vinto'}. ${reason}`);
 }
-
-async function finalizeMatch(
-  matchId: string,
-  state: GameState,
-  winnerIndex: PlayerIndex | null,
-  reason: string,
-): Promise<void> {
-  state.status = 'finished';
-  state.phase = 'end';
-  state.winner_index = winnerIndex;
-
-  const { error } = await supabase
-    .from('matches')
-    .update({
-      player_won: winnerIndex === null ? null : winnerIndex === 1,
-      turns_count: state.current_turn,
-    })
-    .eq('id', matchId);
-
-  if (error) {
-    throw new Error(`Impossibile terminare la partita: ${error.message}`);
-  }
-
-  await saveGameState(matchId, state);
-
-  const result =
-    winnerIndex === null
-      ? 'La partita termina in pareggio.'
-      : winnerIndex === 1
-        ? 'Hai vinto la partita.'
-        : 'L’IA ha vinto la partita.';
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: 'end',
-    player_index: winnerIndex ?? -1,
-    action_type: 'match_end',
-    description: `${result} ${reason}`,
-  });
+function assertTurn(s: GameState, p: PlayerIndex) {
+  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
 }
-
-function checkWinner(state: GameState): PlayerIndex | null {
-  const aiLife = state.players[0].life;
-  const humanLife = state.players[1].life;
-
-  if (aiLife <= 0 && humanLife <= 0) {
-    return null;
+export async function playCard(id: string, p: PlayerIndex, cardInstanceId: string, options: PlayCardOptions = {}): Promise<GameState> {
+  const s = await load(id); assertTurn(s, p);
+  const owner = s.players[p];
+  const i = owner.hand.findIndex(c => c.instance_id === cardInstanceId);
+  if (i < 0) throw new Error('Carta non presente nella mano');
+  const card = await getCardData(owner.hand[i].card_id);
+  if (owner.current_mana < card.mana_cost) throw new Error('Mana insufficiente');
+  const creature = card.card_type === 'monster' || card.card_type === 'mostrissimo';
+  if (creature) {
+    if (!options.position || !valid(options.position) || options.position.row !== home(p) || at(s, options.position)) throw new Error('Evoca in una cella libera della tua riga iniziale');
+    if (card.card_type === 'mostrissimo') throw new Error('I Mostrissimi richiedono la selezione manuale dei sacrifici: non ancora disponibile in questa versione.');
   }
-
-  if (aiLife <= 0) {
-    return 1;
-  }
-
-  if (humanLife <= 0) {
-    return 0;
-  }
-
-  return null;
+  if (card.card_type === 'terraforma' && owner.field_spell) throw new Error('Una Terraforma è già attiva');
+  if (card.card_type === 'aura' && !options.targetInstanceId) throw new Error('Seleziona una creatura per l’Aura');
+  if (targeted(card) && !options.targetInstanceId) throw new Error('Seleziona una creatura bersaglio');
+  if (options.targetInstanceId) locate(s, options.targetInstanceId);
+  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'return_hand']);
+  if (effects(card.effect_json).some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
+  const played = owner.hand.splice(i, 1)[0]; owner.current_mana -= card.mana_cost;
+  owner.color_counters[card.faction_code] = (owner.color_counters[card.faction_code] ?? 0) + 1;
+  if (creature) {
+    put(s, options.position!, { instance_id: played.instance_id, card_id: played.card_id, owner_index: p, attack: Number(card.attack ?? 0), hp: Number(card.hp ?? 1), max_hp: Number(card.hp ?? 1), tired: !keyword(card, 'iperattivo'), auras: [] });
+  } else if (card.card_type === 'terraforma') owner.field_spell = played;
+  else if (card.card_type === 'aura') locate(s, options.targetInstanceId!).cell.auras.push(played);
+  else owner.graveyard.push(played);
+  await log(id, s, p, 'play_card', `${label(p)} ${p === 1 ? 'giochi' : 'gioca'} ${card.name}.`, { card_id: card.id, instance_id: played.instance_id, position: options.position ?? null });
+  for (const e of effects(card.effect_json)) await resolve(id, s, p, other(p), card, e, options.targetInstanceId ?? null);
+  await saveGameState(id, s); return s;
 }
-
-async function startTurn(
-  matchId: string,
-  playerIndex: PlayerIndex,
-): Promise<GameState> {
-  const state = await loadState(matchId);
-
-  if (state.status !== 'running') {
-    throw new Error('La partita è terminata');
-  }
-
-  state.active_player_index = playerIndex;
-  state.phase = 'start';
-  state.anti_loop_counter = 0;
-
-  if (playerIndex === 1) {
-    state.current_turn += 1;
-  }
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: 'start',
-    player_index: playerIndex,
-    action_type: 'turn_start',
-    description: `Inizia il turno di ${describePlayer(playerIndex)}.`,
-  });
-
-  const player = getPlayer(state, playerIndex);
-  const opponent = getPlayer(state, otherPlayer(playerIndex));
-
-  state.phase = 'upkeep';
-  player.max_mana = Math.min(MANA_CAP, player.max_mana + 1);
-  player.current_mana = player.max_mana;
-  wakeCreatures(state, playerIndex);
-
-  const drawn = drawCards(player, 1);
-
-  if (drawn.length === 0) {
-    await finalizeMatch(
-      matchId,
-      state,
-      opponent.player_index,
-      'Mazzo esaurito.',
-    );
-
-    return state;
-  }
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: 'upkeep',
-    player_index: playerIndex,
-    action_type: 'upkeep',
-    amount: player.current_mana,
-    description: `${describePlayer(playerIndex)} ${playerVerb(playerIndex, 'reach')} ${player.current_mana}/${player.max_mana} mana e ${playerVerb(playerIndex, 'draw')} una carta.`,
-  });
-
-  state.phase = 'main';
-  await saveGameState(matchId, state);
-
-  return state;
+export async function moveCreature(id: string, p: PlayerIndex, from: Position, to: Position): Promise<GameState> {
+  const s = await load(id); assertTurn(s, p);
+  if (!valid(from) || !valid(to) || !adjacent(from, to) || !allowed(p, to.row)) throw new Error('Movimento non valido: una cella ortogonale, senza entrare nella riga avversaria');
+  const c = at(s, from);
+  if (!c || c.owner_index !== p || c.tired || at(s, to)) throw new Error('Creatura stanca, non tua o destinazione occupata');
+  if (s.players[p].current_mana < 1) throw new Error('Serve 1 mana per Muovi');
+  s.players[p].current_mana--;
+  put(s, from, null); put(s, to, c);
+  const card = await getCardData(c.card_id);
+  await log(id, s, p, 'move_creature', `${label(p)} ${p === 1 ? 'muovi' : 'muove'} ${card.name} spendendo 1 mana. Rimane pronta.`, { from_position: from, to_position: to, card_id: card.id, instance_id: c.instance_id });
+  await saveGameState(id, s); return s;
 }
-
-export async function playCard(
-  matchId: string,
-  playerIndex: PlayerIndex,
-  instanceId: string,
-  options: PlayCardOptions = {},
-): Promise<GameState> {
-  const state = await loadState(matchId);
-
-  if (state.status !== 'running') {
-    throw new Error('La partita è terminata');
-  }
-
-  if (state.active_player_index !== playerIndex || state.phase !== 'main') {
-    throw new Error('Non è il turno del giocatore');
-  }
-
-  const player = getPlayer(state, playerIndex);
-  const opponent = getPlayer(state, otherPlayer(playerIndex));
-  const handCard = player.hand.find(
-    (instance) => instance.instance_id === instanceId,
-  );
-
-  if (!handCard) {
-    throw new Error('La carta non è nella mano del giocatore');
-  }
-
-  const card = await getCardData(handCard.card_id);
-
-  if (player.current_mana < card.mana_cost) {
-    throw new Error('Mana insufficiente');
-  }
-
-  if (isCreatureCard(card)) {
-    if (!options.position || !isValidPosition(options.position)) {
-      throw new Error('Scegli una posizione valida per la creatura');
-    }
-
-    if (options.position.row !== playerHomeRow(playerIndex)) {
-      throw new Error(
-        `Puoi evocare creature soltanto nella tua riga iniziale.`,
-      );
-    }
-
-    if (getCell(state, options.position)) {
-      throw new Error('La cella scelta è già occupata');
-    }
-
-    if (
-      card.card_type === 'mostrissimo' &&
-      countCreatures(state, playerIndex) < card.sacrifice_cost
-    ) {
-      throw new Error(`Servono ${card.sacrifice_cost} creature da sacrificare`);
-    }
-  }
-
-  if (card.card_type === 'terraforma' && player.field_spell) {
-    throw new Error('Hai già una Terraforma attiva');
-  }
-
-  if (requiresTarget(card) && !options.targetInstanceId) {
-    throw new Error('Questa carta richiede di selezionare una creatura bersaglio');
-  }
-
-  if (options.targetInstanceId) {
-    findCreatureTarget(state, options.targetInstanceId);
-  }
-
-  const instance = removeFromHand(player, instanceId);
-  player.current_mana -= card.mana_cost;
-  player.color_counters[card.faction_code] =
-    Number(player.color_counters[card.faction_code] ?? 0) + 1;
-
-  if (isCreatureCard(card)) {
-    if (card.card_type === 'mostrissimo' && card.sacrifice_cost > 0) {
-      const sacrificed = sacrificeCreatures(
-        state,
-        playerIndex,
-        card.sacrifice_cost,
-      );
-
-      await logMatchAction(matchId, {
-        turn: state.current_turn,
-        phase: state.phase,
-        player_index: playerIndex,
-        action_type: 'sacrifice',
-        card_id: card.id,
-        instance_id: instance.instance_id,
-        amount: sacrificed.length,
-        description: `${describePlayer(playerIndex)} sacrifica ${sacrificed.length} creatura/e per evocare ${card.name}.`,
-      });
-    }
-
-    setCell(state, options.position as Position, {
-      instance_id: instance.instance_id,
-      card_id: card.id,
-      owner_index: playerIndex,
-      attack: Number(card.attack ?? 0),
-      hp: Number(card.hp ?? 1),
-      max_hp: Number(card.hp ?? 1),
-      tired: false,
-      auras: [],
-    });
-  } else if (card.card_type === 'terraforma') {
-    player.field_spell = {
-      instance_id: instance.instance_id,
-      card_id: card.id,
-    };
-  } else if (card.card_type === 'aura') {
-    const target = findCreatureTarget(
-      state,
-      options.targetInstanceId as string,
-    );
-
-    target.cell.auras.push({
-      instance_id: instance.instance_id,
-      card_id: card.id,
-    });
-  } else {
-    player.graveyard.push(instance);
-  }
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: state.phase,
-    player_index: playerIndex,
-    action_type: 'play_card',
-    card_id: card.id,
-    instance_id: instance.instance_id,
-    position: options.position ?? null,
-    target_instance_id: options.targetInstanceId,
-    description: `${describePlayer(playerIndex)} gioca ${card.name}.`,
-  });
-
-  if (card.effect_json) {
-    await resolveEffect(
-      matchId,
-      state,
-      playerIndex,
-      otherPlayer(playerIndex),
-      card,
-      card.effect_json,
-      options.targetInstanceId ?? null,
-    );
-  }
-
-  const winner = checkWinner(state);
-
-  if (winner !== null) {
-    await finalizeMatch(
-      matchId,
-      state,
-      winner,
-      'La vita di un giocatore è scesa a zero.',
-    );
-    return state;
-  }
-
-  await saveGameState(matchId, state);
-  return state;
-}
-
-export async function moveCreature(
-  matchId: string,
-  playerIndex: PlayerIndex,
-  from: Position,
-  to: Position,
-): Promise<GameState> {
-  const state = await loadState(matchId);
-
-  if (state.status !== 'running') {
-    throw new Error('La partita è terminata');
-  }
-
-  if (state.active_player_index !== playerIndex || state.phase !== 'main') {
-    throw new Error('Non è il turno del giocatore');
-  }
-
-  if (!isValidPosition(from) || !isValidPosition(to)) {
-    throw new Error('Posizione di movimento non valida');
-  }
-
-  if (!isOrthogonallyAdjacent(from, to)) {
-    throw new Error('Puoi muovere una creatura di una sola cella ortogonale');
-  }
-
-  const player = getPlayer(state, playerIndex);
-  const creature = getCell(state, from);
-
-  if (!creature) {
-    throw new Error('Non c’è alcuna creatura nella cella di origine');
-  }
-
-  if (creature.owner_index !== playerIndex) {
-    throw new Error('Puoi muovere soltanto le tue creature');
-  }
-
-  if (creature.tired) {
-    throw new Error('Una creatura stanca non può muoversi');
-  }
-
-  if (getCell(state, to)) {
-    throw new Error('La cella di destinazione è occupata');
-  }
-
-  if (player.current_mana < MOVE_COST) {
-    throw new Error('Mana insufficiente per muovere questa creatura');
-  }
-
-  player.current_mana -= MOVE_COST;
-  creature.tired = true;
-
-  setCell(state, from, null);
-  setCell(state, to, creature);
-
-  const card = await getCardData(creature.card_id);
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: state.phase,
-    player_index: playerIndex,
-    action_type: 'move_creature',
-    card_id: card.id,
-    instance_id: creature.instance_id,
-    amount: MOVE_COST,
-    from_position: from,
-    to_position: to,
-    description: `${describePlayer(playerIndex)} muove ${card.name} e spende ${MOVE_COST} mana.`,
-  });
-
-  await saveGameState(matchId, state);
-  return state;
-}
-
-export async function attack(
-  matchId: string,
-  playerIndex: PlayerIndex,
-  attackerPosition: Position,
-  target: AttackTarget,
-): Promise<GameState> {
-  const state = await loadState(matchId);
-
-  if (state.status !== 'running') {
-    throw new Error('La partita è terminata');
-  }
-
-  if (state.active_player_index !== playerIndex || state.phase !== 'main') {
-    throw new Error('Non è il turno del giocatore');
-  }
-
-  if (!isValidPosition(attackerPosition)) {
-    throw new Error('Posizione attaccante non valida');
-  }
-
-  const attacker = getCell(state, attackerPosition);
-
-  if (!attacker) {
-    throw new Error('Non c’è alcuna creatura attaccante in quella cella');
-  }
-
-  if (attacker.owner_index !== playerIndex) {
-    throw new Error('Puoi attaccare soltanto con le tue creature');
-  }
-
-  if (attacker.tired) {
-    throw new Error('Questa creatura è stanca e non può attaccare');
-  }
-
-  const defenderIndex = otherPlayer(playerIndex);
-  const adjacentEnemies = adjacentEnemyPositions(
-    state,
-    attackerPosition,
-    playerIndex,
-  );
-
+export async function attack(id: string, p: PlayerIndex, from: Position, target: AttackTarget): Promise<GameState> {
+  const s = await load(id); assertTurn(s, p);
+  if (!valid(from)) throw new Error('Attaccante non valido');
+  const c = at(s, from);
+  if (!c || c.owner_index !== p || c.tired) throw new Error('Creatura non tua oppure stanca');
+  const options = enemies(s, from, p);
+  const name = (await getCardData(c.card_id)).name;
   if (target.type === 'creature') {
-    if (!isValidPosition(target.position)) {
-      throw new Error('Posizione bersaglio non valida');
-    }
-
-    const defender = getCell(state, target.position);
-
-    if (!defender || defender.owner_index !== defenderIndex) {
-      throw new Error('La creatura bersaglio non è valida');
-    }
-
-    if (!isOrthogonallyAdjacent(attackerPosition, target.position)) {
-      throw new Error(
-        'Puoi attaccare soltanto creature avversarie ortogonalmente adiacenti',
-      );
-    }
-
-    defender.hp -= attacker.attack;
-    attacker.tired = true;
-
-    const attackerCard = await getCardData(attacker.card_id);
-    const defenderCard = await getCardData(defender.card_id);
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: playerIndex,
-      action_type: 'attack_creature',
-      card_id: attackerCard.id,
-      instance_id: attacker.instance_id,
-      target_instance_id: defender.instance_id,
-      amount: attacker.attack,
-      position: attackerPosition,
-      description: `${describePlayer(playerIndex)} attacca ${defenderCard.name} con ${attackerCard.name} e infligge ${attacker.attack} danno/i.`,
-    });
-
-    if (defender.hp <= 0) {
-      await destroyCreature(
-        matchId,
-        state,
-        target.position,
-        playerIndex,
-      );
-    }
+    if (!valid(target.position) || !options.some(q => q.row === target.position.row && q.col === target.position.col)) throw new Error('Bersaglio non ortogonalmente adiacente');
+    const victim = at(s, target.position)!;
+    victim.hp -= c.attack; c.tired = true;
+    await log(id, s, p, 'attack_creature', `${label(p)} ${p === 1 ? 'attacchi' : 'attacca'} con ${name}: ${c.attack} danno/i a una creatura.`, { position: from, target_instance_id: victim.instance_id });
+    if (victim.hp <= 0) await destroy(id, s, target.position, p);
   } else {
-    if (target.playerIndex !== defenderIndex) {
-      throw new Error('Non puoi attaccare te stesso');
-    }
-
-    if (adjacentEnemies.length > 0) {
-      throw new Error(
-        'Attacco diretto bloccato: devi prima affrontare una creatura nemica adiacente.',
-      );
-    }
-
-    const defender = getPlayer(state, defenderIndex);
-    defender.life -= attacker.attack;
-    attacker.tired = true;
-
-    const attackerCard = await getCardData(attacker.card_id);
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: state.phase,
-      player_index: playerIndex,
-      action_type: 'attack_player',
-      card_id: attackerCard.id,
-      instance_id: attacker.instance_id,
-      target_player_index: defenderIndex,
-      amount: attacker.attack,
-      position: attackerPosition,
-      description: `${describePlayer(playerIndex)} attacca direttamente con ${attackerCard.name} e infligge ${attacker.attack} danno/i.`,
-    });
+    if (target.playerIndex !== other(p) || options.length) throw new Error('Attacco diretto vietato: esistono altri bersagli validi');
+    s.players[other(p)].life -= c.attack; c.tired = true;
+    await log(id, s, p, 'attack_player', `${label(p)} ${p === 1 ? 'attacchi' : 'attacca'} direttamente con ${name}: ${c.attack} danno/i.`, { position: from, target_player_index: other(p) });
   }
-
-  const winner = checkWinner(state);
-
-  if (winner !== null) {
-    await finalizeMatch(
-      matchId,
-      state,
-      winner,
-      'La vita di un giocatore è scesa a zero.',
-    );
-    return state;
-  }
-
-  await saveGameState(matchId, state);
-  return state;
+  if (s.players[other(p)].life <= 0) await finish(id, s, p, 'PV avversari esauriti.');
+  else await saveGameState(id, s);
+  return s;
 }
-
-export async function endHumanTurn(matchId: string): Promise<GameState> {
-  const state = await loadState(matchId);
-
-  if (state.status !== 'running') {
-    throw new Error('La partita è terminata');
-  }
-
-  if (state.active_player_index !== 1 || state.phase !== 'main') {
-    throw new Error('Non è il tuo turno');
-  }
-
-  state.phase = 'end';
-
-  await logMatchAction(matchId, {
-    turn: state.current_turn,
-    phase: 'end',
-    player_index: 1,
-    action_type: 'turn_end',
-    description: 'Termini il tuo turno.',
-  });
-
-  await saveGameState(matchId, state);
-
-  const aiStarted = await startTurn(matchId, 0);
-  await runAiTurn(matchId, aiStarted);
-
-  const afterAi = await loadState(matchId);
-
-  if (afterAi.status !== 'running') {
-    return afterAi;
-  }
-
-  return startTurn(matchId, 1);
+async function start(id: string, p: PlayerIndex) {
+  const s = await load(id);
+  s.active_player_index = p; s.phase = 'upkeep'; s.anti_loop_counter = 0;
+  if (p === 1) s.current_turn++;
+  const player = s.players[p]; player.max_mana = Math.min(6, player.max_mana + 1); player.current_mana = player.max_mana;
+  for (const { cell } of units(s, p)) cell.tired = false;
+  if (!draw(player, 1)) { await finish(id, s, other(p), 'Mazzo esaurito.'); return s; }
+  await log(id, s, p, 'upkeep', `${p === 1 ? 'Raggiungi' : 'L’IA raggiunge'} ${player.current_mana}/${player.max_mana} mana e ${p === 1 ? 'peschi' : 'pesca'} una carta.`);
+  s.phase = 'main'; await saveGameState(id, s); return s;
 }
-
-function homeRowFreePositions(
-  state: GameState,
-  playerIndex: PlayerIndex,
-): Position[] {
-  const row = playerHomeRow(playerIndex);
-  const positions: Position[] = [];
-
-  for (let col = 0; col < BOARD_SIZE; col += 1) {
-    if (!state.board.rows[row][col]) {
-      positions.push({ row, col });
-    }
-  }
-
-  return positions;
-}
-
-async function findAiPlay(
-  state: GameState,
-): Promise<{ instanceId: string; options: PlayCardOptions } | null> {
-  const ai = getPlayer(state, 0);
-  const freeHomeSlots = homeRowFreePositions(state, 0);
-
-  const cards = await Promise.all(
-    ai.hand.map(async (instance) => ({
-      instance,
-      card: await getCardData(instance.card_id),
-    })),
-  );
-
-  const creatures = cards
-    .filter(
-      ({ card }) =>
-        isCreatureCard(card) &&
-        card.mana_cost <= ai.current_mana &&
-        freeHomeSlots.length > 0 &&
-        (card.card_type !== 'mostrissimo' ||
-          countCreatures(state, 0) >= card.sacrifice_cost),
-    )
-    .sort(
-      (first, second) =>
-        (second.card.attack ?? 0) +
-        (second.card.hp ?? 0) -
-        ((first.card.attack ?? 0) + (first.card.hp ?? 0)),
-    );
-
-  if (creatures.length > 0) {
-    return {
-      instanceId: creatures[0].instance.instance_id,
-      options: {
-        position: freeHomeSlots[0],
-      },
-    };
-  }
-
-  const targetableEnemies = findOwnedCreatures(state, 1);
-
-  const targetSpells = cards
-    .filter(
-      ({ card }) =>
-        card.mana_cost <= ai.current_mana &&
-        requiresTarget(card) &&
-        targetableEnemies.length > 0,
-    )
-    .sort((first, second) => second.card.mana_cost - first.card.mana_cost);
-
-  if (targetSpells.length > 0) {
-    return {
-      instanceId: targetSpells[0].instance.instance_id,
-      options: {
-        targetInstanceId: targetableEnemies[0].cell.instance_id,
-      },
-    };
-  }
-
-  const safeSpells = cards
-    .filter(
-      ({ card }) =>
-        card.mana_cost <= ai.current_mana &&
-        !requiresTarget(card) &&
-        card.card_type !== 'aura' &&
-        card.card_type !== 'instant',
-    )
-    .sort((first, second) => second.card.mana_cost - first.card.mana_cost);
-
-  if (safeSpells.length > 0) {
-    return {
-      instanceId: safeSpells[0].instance.instance_id,
-      options: {},
-    };
-  }
-
-  return null;
-}
-
-function findAiAttack(state: GameState): {
-  attackerPosition: Position;
-  target: AttackTarget;
-} | null {
-  for (const { position, cell } of findOwnedCreatures(state, 0)) {
-    if (cell.tired || cell.attack <= 0) {
+async function aiTurn(id: string) {
+  for (let count = 0; count < 20; count++) {
+    const s = await load(id);
+    if (s.status !== 'running') break;
+    const ready = units(s, 0).filter(u => !u.cell.tired);
+    if (ready.length) {
+      const u = ready[0]; const targets = enemies(s, u.position, 0);
+      await attack(id, 0, u.position, targets.length ? { type: 'creature', position: targets[0] } : { type: 'player', playerIndex: 1 });
       continue;
     }
-
-    const enemies = adjacentEnemyPositions(state, position, 0);
-
-    if (enemies.length > 0) {
-      return {
-        attackerPosition: position,
-        target: {
-          type: 'creature',
-          position: enemies[0],
-        },
-      };
-    }
-
-    return {
-      attackerPosition: position,
-      target: {
-        type: 'player',
-        playerIndex: 1,
-      },
-    };
-  }
-
-  return null;
-}
-
-function findAiMove(state: GameState): {
-  from: Position;
-  to: Position;
-} | null {
-  const ai = getPlayer(state, 0);
-
-  if (ai.current_mana < MOVE_COST) {
-    return null;
-  }
-
-  const humans = findOwnedCreatures(state, 1);
-
-  for (const { position, cell } of findOwnedCreatures(state, 0)) {
-    if (cell.tired) {
-      continue;
-    }
-
-    const candidates = adjacentPositions(position).filter(
-      (candidate) => !getCell(state, candidate),
-    );
-
-    for (const candidate of candidates) {
-      const hasAdjacentEnemy = humans.some(({ position: humanPosition }) =>
-        isOrthogonallyAdjacent(candidate, humanPosition),
-      );
-
-      if (hasAdjacentEnemy) {
-        return {
-          from: position,
-          to: candidate,
-        };
+    const free = [0, 1, 2].filter(col => !s.board.rows[0][col]);
+    if (free.length && s.players[0].hand.length) {
+      const cards = await Promise.all(s.players[0].hand.map(async c => ({ instance: c, card: await getCardData(c.card_id) })));
+      const choices = cards.filter(x => x.card.card_type === 'monster' && x.card.mana_cost <= s.players[0].current_mana && effects(x.card.effect_json).every(e => ['draw', 'discard', 'heal', 'damage', 'return_hand'].includes(e.type)));
+      const choice = choices.find(x => !targeted(x.card)) ?? choices.find(x => targeted(x.card) && units(s, 1).length);
+      if (choice) {
+        const options: PlayCardOptions = { position: { row: 0, col: free[0] } };
+        if (targeted(choice.card)) options.targetInstanceId = units(s, 1)[0].cell.instance_id;
+        await playCard(id, 0, choice.instance.instance_id, options); continue;
       }
     }
-  }
-
-  return null;
-}
-
-async function runAiTurn(
-  matchId: string,
-  initialState: GameState,
-): Promise<void> {
-  let state = initialState;
-
-  for (let actionCount = 0; actionCount < 20; actionCount += 1) {
-    if (
-      state.status !== 'running' ||
-      state.active_player_index !== 0 ||
-      state.phase !== 'main'
-    ) {
-      break;
+    const mover = units(s, 0).find(u => !u.cell.tired && s.players[0].current_mana >= 1 && around(u.position).some(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length));
+    if (mover) {
+      const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length)!;
+      await moveCreature(id, 0, mover.position, to); continue;
     }
-
-    const attackAction = findAiAttack(state);
-
-    if (attackAction) {
-      await attack(
-        matchId,
-        0,
-        attackAction.attackerPosition,
-        attackAction.target,
-      );
-
-      state = await loadState(matchId);
-      continue;
-    }
-
-    const play = await findAiPlay(state);
-
-    if (play) {
-      await playCard(matchId, 0, play.instanceId, play.options);
-
-      state = await loadState(matchId);
-      continue;
-    }
-
-    const moveAction = findAiMove(state);
-
-    if (moveAction) {
-      await moveCreature(matchId, 0, moveAction.from, moveAction.to);
-
-      state = await loadState(matchId);
-      continue;
-    }
-
     break;
   }
-
-  state = await loadState(matchId);
-
-  if (state.status === 'running' && state.active_player_index === 0) {
-    state.phase = 'end';
-
-    await logMatchAction(matchId, {
-      turn: state.current_turn,
-      phase: 'end',
-      player_index: 0,
-      action_type: 'turn_end',
-      description: 'L’IA termina il proprio turno.',
-    });
-
-    await saveGameState(matchId, state);
-  }
+  const s = await load(id);
+  if (s.status === 'running') { s.phase = 'end'; await log(id, s, 0, 'turn_end', 'L’IA termina il turno.'); await saveGameState(id, s); }
+}
+export async function endHumanTurn(id: string): Promise<GameState> {
+  const s = await load(id); assertTurn(s, 1);
+  s.phase = 'end'; await log(id, s, 1, 'turn_end', 'Termini il turno.'); await saveGameState(id, s);
+  const ai = await start(id, 0); if (ai.status === 'finished') return ai;
+  await aiTurn(id); const after = await load(id);
+  return after.status === 'running' ? start(id, 1) : after;
 }
