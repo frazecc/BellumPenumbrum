@@ -6,10 +6,10 @@ const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_KEY;
 if (!url || !key) throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
 const db = createClient(url, key);
-const size = 3;
+const N = 3;
 const other = (p: PlayerIndex): PlayerIndex => p === 0 ? 1 : 0;
 const label = (p: PlayerIndex) => p === 1 ? 'Tu' : 'L’IA';
-const valid = (p: Position) => Number.isInteger(p.row) && Number.isInteger(p.col) && p.row >= 0 && p.row < size && p.col >= 0 && p.col < size;
+const valid = (p: Position) => Number.isInteger(p.row) && Number.isInteger(p.col) && p.row >= 0 && p.row < N && p.col >= 0 && p.col < N;
 const adjacent = (a: Position, b: Position) => Math.abs(a.row - b.row) + Math.abs(a.col - b.col) === 1;
 const around = (p: Position): Position[] => [{ row: p.row - 1, col: p.col }, { row: p.row + 1, col: p.col }, { row: p.row, col: p.col - 1 }, { row: p.row, col: p.col + 1 }].filter(valid);
 const home = (p: PlayerIndex) => p === 0 ? 0 : 2;
@@ -20,7 +20,7 @@ const at = (s: GameState, p: Position) => s.board.rows[p.row][p.col];
 const put = (s: GameState, p: Position, c: BoardCell | null) => { s.board.rows[p.row][p.col] = c; };
 const units = (s: GameState, owner: PlayerIndex) => {
   const result: { position: Position; cell: BoardCell }[] = [];
-  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
+  for (let row = 0; row < N; row++) for (let col = 0; col < N; col++) {
     const cell = s.board.rows[row][col];
     if (cell?.owner_index === owner) result.push({ position: { row, col }, cell });
   }
@@ -38,11 +38,6 @@ const keyword = (card: CardData, name: string) => {
   const c = card as CardData & { keywords?: unknown; keyword_json?: unknown };
   const raw = [c.keywords, c.keyword_json, (card.effect_json as { keywords?: unknown } | null)?.keywords];
   return raw.some(k => Array.isArray(k) && k.some(v => String(v).toLowerCase() === name));
-};
-const draw = (p: PlayerState, n: number) => {
-  let taken = 0;
-  while (taken < n && p.deck.length) { p.hand.push(p.deck.shift()!); taken++; }
-  return taken;
 };
 function shuffle<T>(values: T[]) {
   const a = [...values];
@@ -74,14 +69,12 @@ export async function getCardData(id: string): Promise<CardData> {
   return { ...data, faction_code: f && typeof f === 'object' && 'code' in f ? String(f.code) : 'IND' } as CardData;
 }
 function locate(s: GameState, id: string) {
-  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
+  for (let row = 0; row < N; row++) for (let col = 0; col < N; col++) {
     const cell = s.board.rows[row][col];
     if (cell?.instance_id === id) return { position: { row, col }, cell };
   }
   throw new Error('Creatura bersaglio non presente sulla plancia');
 }
-// Bersagli degli ETB: i danni alle creature colpiscono soltanto gli avversari;
-// le cure soltanto i propri alleati; il rimbalzo ammette entrambi.
 function eligible(s: GameState, owner: PlayerIndex, effect: EffectDefinition) {
   if (effect.type === 'damage' || effect.type === 'damage_creature') return units(s, other(owner));
   if (effect.type === 'heal') return units(s, owner);
@@ -94,7 +87,7 @@ function chosenTarget(s: GameState, owner: PlayerIndex, effect: EffectDefinition
   return selected;
 }
 async function clearLoop(id: string, s: GameState) {
-  for (let row = 0; row < size; row++) for (let col = 0; col < size; col++) {
+  for (let row = 0; row < N; row++) for (let col = 0; col < N; col++) {
     const cell = s.board.rows[row][col];
     if (cell) { s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras); s.board.rows[row][col] = null; }
   }
@@ -114,6 +107,34 @@ async function destroy(id: string, s: GameState, p: Position, killer: PlayerInde
     await resolve(id, s, cell.owner_index, killer, card, effect, null, false);
   }
 }
+async function finish(id: string, s: GameState, winner: PlayerIndex, reason: string) {
+  if (s.status === 'finished') return;
+  s.status = 'finished'; s.phase = 'end'; s.winner_index = winner;
+  const { error } = await db.from('matches').update({ player_won: winner === 1, turns_count: s.current_turn }).eq('id', id);
+  if (error) throw new Error(`Chiusura partita: ${error.message}`);
+  await saveGameState(id, s);
+  await log(id, s, winner, 'match_end', `${winner === 1 ? 'Hai vinto' : 'L’IA ha vinto'}. ${reason}`);
+}
+function winner(s: GameState): PlayerIndex | null {
+  if (s.players[0].life <= 0) return 1;
+  if (s.players[1].life <= 0) return 0;
+  return null;
+}
+// Ogni singolo tentativo di pesca senza carte costa esattamente 2 PV.
+// La funzione non conclude direttamente la partita: il chiamante salva o chiude lo stato.
+async function draw(id: string, s: GameState, recipient: PlayerIndex, amount: number): Promise<number> {
+  let taken = 0;
+  for (let i = 0; i < amount; i++) {
+    const next = s.players[recipient].deck.shift();
+    if (next) { s.players[recipient].hand.push(next); taken++; }
+    else {
+      s.players[recipient].life -= 2;
+      await log(id, s, recipient, 'empty_draw_damage', `${label(recipient)} ${recipient === 1 ? 'dovresti pescare' : 'dovrebbe pescare'}, ma il mazzo è vuoto: subisce 2 danni (${Math.max(0, s.players[recipient].life)} PV rimasti).`, { amount: 2 });
+      if (s.players[recipient].life <= 0) break;
+    }
+  }
+  return taken;
+}
 async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: PlayerIndex, card: CardData, effect: EffectDefinition, targetId: string | null, etb: boolean) {
   const n = Number(effect.amount ?? 1);
   if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Quantità effetto non valida');
@@ -130,8 +151,8 @@ async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: P
   }
   if (effect.type === 'draw') {
     const p = target === 'opponent' ? opponent : owner;
-    const count = draw(s.players[p], n);
-    await log(id, s, owner, 'effect_draw', `${card.name}: ${p === 1 ? 'peschi' : 'l’IA pesca'} ${count} carta/e.`);
+    const count = await draw(id, s, p, n);
+    await log(id, s, owner, 'effect_draw', `${card.name}: ${p === 1 ? 'peschi' : 'l’IA pesca'} ${count} carta/e su ${n} richiesta/e.`);
   } else if (effect.type === 'discard') {
     const p = target === 'self' ? owner : opponent;
     let count = 0;
@@ -191,7 +212,10 @@ export async function createNewMatch(userId: string): Promise<{ matchId: string;
   if (error || !data) throw new Error(`Creazione partita: ${error?.message ?? 'nessun ID'}`);
   const matchId = String(data.id);
   const ai = player(0, null, aiCards), human = player(1, userId, humanCards);
-  draw(ai, 4); draw(human, 3); human.max_mana = human.current_mana = 1;
+  // La mano iniziale è assegnata durante la preparazione, non sono tentativi di pesca.
+  for (let i = 0; i < 4; i++) ai.hand.push(ai.deck.shift()!);
+  for (let i = 0; i < 3; i++) human.hand.push(human.deck.shift()!);
+  human.max_mana = human.current_mana = 1;
   const state: GameState = { state_version: 2, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null };
   const inserted = await db.from('game_state').insert({ match_id: matchId, state_json: state, current_turn: 1, current_phase: 2, last_updated: new Date().toISOString() });
   if (inserted.error) throw new Error(`Creazione stato: ${inserted.error.message}`);
@@ -199,13 +223,6 @@ export async function createNewMatch(userId: string): Promise<{ matchId: string;
   return { matchId, state };
 }
 export async function getMatchState(id: string) { return load(id); }
-async function finish(id: string, s: GameState, winner: PlayerIndex, reason: string) {
-  s.status = 'finished'; s.phase = 'end'; s.winner_index = winner;
-  const { error } = await db.from('matches').update({ player_won: winner === 1, turns_count: s.current_turn }).eq('id', id);
-  if (error) throw new Error(`Chiusura partita: ${error.message}`);
-  await saveGameState(id, s);
-  await log(id, s, winner, 'match_end', `${winner === 1 ? 'Hai vinto' : 'L’IA ha vinto'}. ${reason}`);
-}
 function assertTurn(s: GameState, p: PlayerIndex) {
   if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
 }
@@ -226,18 +243,12 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   const onPlay = effects(card.effect_json);
   const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand']);
   if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
-  // Prima di cambiare stato, valida il bersaglio rispetto alla plancia attuale.
-  // ETB senza bersagli validi: l'evocazione rimane lecita; la risoluzione annoterà il mancato effetto.
   for (const effect of onPlay.filter(e => e.target === 'any_creature' || e.type === 'return_hand')) {
     const candidates = eligible(s, p, effect);
     if (options.targetInstanceId) {
       if (!candidates.some(x => x.cell.instance_id === options.targetInstanceId)) throw new Error('Bersaglio non valido per questo effetto');
-    } else if (candidates.length > 0 && !creature) {
-      throw new Error('Seleziona una creatura bersaglio');
-    } else if (candidates.length > 0 && creature) {
-      // Una cura ETB può scegliere il mostro appena evocato se non esistono ancora alleati.
-      const selfHeal = effect.type === 'heal' && candidates.length === 0;
-      if (!selfHeal) throw new Error('Seleziona una creatura bersaglio per l’ETB');
+    } else if (candidates.length && !(creature && effect.type === 'heal' && candidates.length === 0)) {
+      throw new Error('Seleziona una creatura bersaglio per l’effetto');
     } else if (!creature) throw new Error('Questa magia richiede una creatura bersaglio');
   }
   const played = owner.hand.splice(i, 1)[0]; owner.current_mana -= card.mana_cost;
@@ -249,9 +260,10 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   else owner.graveyard.push(played);
   await log(id, s, p, 'play_card', `${label(p)} ${p === 1 ? 'giochi' : 'gioca'} ${card.name}.`, { card_id: card.id, instance_id: played.instance_id, position: options.position ?? null });
   for (const effect of onPlay) {
-    // Se la cura ETB non aveva alleati prima dell'evocazione, il nuovo Mostro è l'unico bersaglio.
     const resolvedTarget = creature && effect.type === 'heal' && effect.target === 'any_creature' && !options.targetInstanceId && units(s, p).length === 1 ? played.instance_id : options.targetInstanceId ?? null;
     await resolve(id, s, p, other(p), card, effect, resolvedTarget, creature);
+    const won = winner(s);
+    if (won !== null) { await finish(id, s, won, 'PV esauriti dopo un effetto di pesca.'); return s; }
   }
   await saveGameState(id, s); return s;
 }
@@ -285,18 +297,21 @@ export async function attack(id: string, p: PlayerIndex, from: Position, target:
     s.players[other(p)].life -= c.attack; c.tired = true;
     await log(id, s, p, 'attack_player', `${label(p)} ${p === 1 ? 'attacchi' : 'attacca'} direttamente con ${name}: ${c.attack} danno/i.`, { position: from, target_player_index: other(p) });
   }
-  if (s.players[other(p)].life <= 0) await finish(id, s, p, 'PV avversari esauriti.');
+  const won = winner(s);
+  if (won !== null) await finish(id, s, won, 'PV esauriti.');
   else await saveGameState(id, s);
   return s;
 }
-async function start(id: string, p: PlayerIndex) {
+async function start(id: string, p: PlayerIndex): Promise<GameState> {
   const s = await load(id);
   s.active_player_index = p; s.phase = 'upkeep'; s.anti_loop_counter = 0;
   if (p === 1) s.current_turn++;
   const player = s.players[p]; player.max_mana = Math.min(6, player.max_mana + 1); player.current_mana = player.max_mana;
   for (const { cell } of units(s, p)) cell.tired = false;
-  if (!draw(player, 1)) { await finish(id, s, other(p), 'Mazzo esaurito.'); return s; }
-  await log(id, s, p, 'upkeep', `${p === 1 ? 'Raggiungi' : 'L’IA raggiunge'} ${player.current_mana}/${player.max_mana} mana e ${p === 1 ? 'peschi' : 'pesca'} una carta.`);
+  const count = await draw(id, s, p, 1);
+  await log(id, s, p, 'upkeep', `${p === 1 ? 'Raggiungi' : 'L’IA raggiunge'} ${player.current_mana}/${player.max_mana} mana e ${p === 1 ? 'peschi' : 'pesca'} ${count} carta/e.`);
+  const won = winner(s);
+  if (won !== null) { await finish(id, s, won, 'PV esauriti dopo una pesca impossibile.'); return s; }
   s.phase = 'main'; await saveGameState(id, s); return s;
 }
 async function aiTurn(id: string) {
