@@ -1,1322 +1,207 @@
-import {
-  getAccessToken,
-  getCurrentUser,
-  signOut,
-  usernameFromEmail,
-} from './auth.js';
+import { getAccessToken, getCurrentUser, signOut, usernameFromEmail } from './auth.js';
 
-const API_BASE = 'https://bellum-penumbrum-api.onrender.com';
-const REQUEST_TIMEOUT_MS = 45000;
-
-let matchId = null;
-let gameState = null;
-let selectedHandInstanceId = null;
-let selectedCreaturePosition = null;
-let selectedActionMode = null;
-let selectedAttackTarget = null;
-let cardCache = new Map();
-let busy = false;
-let initialized = false;
-
-const EMPTY_BOARD = [
-  [null, null, null],
-  [null, null, null],
-  [null, null, null],
-];
-
-function byId(id) {
-  return document.getElementById(id);
+const API = 'https://bellum-penumbrum-api.onrender.com';
+const EMPTY = [[null, null, null], [null, null, null], [null, null, null]];
+let state = null, matchId = null, handId = null, chosen = null, mode = null, busy = false, initialized = false;
+const cache = new Map();
+const el = id => document.getElementById(id);
+const board = () => state?.board?.rows ?? EMPTY;
+const cell = p => board()[p.row]?.[p.col] ?? null;
+const human = () => state?.players?.[1];
+const ai = () => state?.players?.[0];
+const turn = () => state?.status === 'running' && state.active_player_index === 1 && state.phase === 'main';
+const valid = p => p.row >= 0 && p.row < 3 && p.col >= 0 && p.col < 3;
+const adjacent = p => [{ row: p.row - 1, col: p.col }, { row: p.row + 1, col: p.col }, { row: p.row, col: p.col - 1 }, { row: p.row, col: p.col + 1 }].filter(valid);
+const targets = () => chosen ? adjacent(chosen).filter(p => cell(p)?.owner_index === 0) : [];
+const moves = () => chosen && cell(chosen)?.owner_index === 1 && !cell(chosen)?.tired ? adjacent(chosen).filter(p => p.row !== 0 && !cell(p)) : [];
+const same = (a, b) => a && b && a.row === b.row && a.col === b.col;
+const escape = x => String(x ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+const clear = () => { handId = null; chosen = null; mode = null; };
+function message(text, kind = '') { const e = el('game-message'); if (e) { e.textContent = text; e.className = `game-message ${kind}`; } }
+function controls() {
+  const enabled = turn() && !busy;
+  const ready = Boolean(chosen && cell(chosen)?.owner_index === 1 && !cell(chosen)?.tired && enabled);
+  const set = (id, disabled) => { if (el(id)) el(id).disabled = disabled; };
+  set('new-match-button', busy);
+  set('end-turn-button', !enabled);
+  set('refresh-button', busy || !matchId);
+  set('choose-attack-button', !ready);
+  set('choose-move-button', !ready || !human()?.current_mana || !moves().length);
+  set('direct-attack-button', !enabled || mode !== 'attack' || targets().length > 0);
+  set('cancel-selection-button', busy || (!chosen && !handId));
+  if (el('selection-instructions')) el('selection-instructions').textContent = !state ? 'Premi Nuova partita per giocare.' : handId ? 'Carta selezionata: clicca una cella libera della riga Tu (riga 2), oppure una creatura se la carta richiede un bersaglio.' : mode === 'move' ? 'Clicca una cella verde: Muovi costa 1 mana, non stanca; la riga IA (0) resta inaccessibile.' : mode === 'attack' ? targets().length ? 'Clicca una creatura IA evidenziata.' : 'Nessun altro bersaglio valido: puoi attaccare direttamente.' : chosen ? 'Scegli Attacca (0 mana) oppure Muovi (1 mana).' : 'Seleziona una carta oppure clicca una tua creatura pronta.';
+  const panel = el('creature-action-panel');
+  if (panel) panel.classList.toggle('hidden', !ready);
+  const c = chosen && cell(chosen);
+  if (c && el('selected-creature-name')) el('selected-creature-name').textContent = cache.get(c.card_id)?.name ?? 'Creatura';
+  if (c && el('selected-creature-details')) el('selected-creature-details').textContent = `ATK ${c.attack} · HP ${c.hp}/${c.max_hp} · ${c.tired ? 'Stanca' : 'Pronta'}`;
 }
-
-function setGameMessage(message = '', kind = '') {
-  const element = byId('game-message');
-
-  if (!element) {
-    return;
-  }
-
-  element.textContent = message;
-  element.className = `game-message ${kind}`.trim();
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
-}
-
-function getHuman() {
-  return gameState?.players?.[1] ?? null;
-}
-
-function getAi() {
-  return gameState?.players?.[0] ?? null;
-}
-
-function getBoard() {
-  return gameState?.board?.rows ?? EMPTY_BOARD;
-}
-
-function isHumanTurn() {
-  return (
-    gameState?.status === 'running' &&
-    gameState?.active_player_index === 1 &&
-    gameState?.phase === 'main'
-  );
-}
-
-function positionsEqual(first, second) {
-  return Boolean(
-    first &&
-      second &&
-      first.row === second.row &&
-      first.col === second.col,
-  );
-}
-
-function isOrthogonallyAdjacent(first, second) {
-  if (!first || !second) {
-    return false;
-  }
-
-  return (
-    Math.abs(first.row - second.row) +
-      Math.abs(first.col - second.col) ===
-    1
-  );
-}
-
-function getCell(position) {
-  return getBoard()?.[position.row]?.[position.col] ?? null;
-}
-
-function findHandInstance(instanceId) {
-  return (
-    getHuman()?.hand?.find(
-      (instance) => instance.instance_id === instanceId,
-    ) ?? null
-  );
-}
-
-function findSelectedCreature() {
-  if (!selectedCreaturePosition) {
-    return null;
-  }
-
-  return getCell(selectedCreaturePosition);
-}
-
-function clearSelection() {
-  selectedHandInstanceId = null;
-  selectedCreaturePosition = null;
-  selectedActionMode = null;
-  selectedAttackTarget = null;
-}
-
-function validMovePositionsForSelectedCreature() {
-  if (!selectedCreaturePosition) {
-    return [];
-  }
-
-  const creature = getCell(selectedCreaturePosition);
-
-  if (!creature || creature.owner_index !== 1 || creature.tired) {
-    return [];
-  }
-
-  const candidates = [
-    {
-      row: selectedCreaturePosition.row - 1,
-      col: selectedCreaturePosition.col,
-    },
-    {
-      row: selectedCreaturePosition.row + 1,
-      col: selectedCreaturePosition.col,
-    },
-    {
-      row: selectedCreaturePosition.row,
-      col: selectedCreaturePosition.col - 1,
-    },
-    {
-      row: selectedCreaturePosition.row,
-      col: selectedCreaturePosition.col + 1,
-    },
-  ];
-
-  return candidates.filter((position) => {
-    const isInsideBoard =
-      position.row >= 0 &&
-      position.row <= 2 &&
-      position.col >= 0 &&
-      position.col <= 2;
-
-    return isInsideBoard && !getCell(position);
-  });
-}
-
-function validMovePositions() {
-  if (selectedActionMode !== 'move') {
-    return [];
-  }
-
-  return validMovePositionsForSelectedCreature();
-}
-
-function validAttackTargets() {
-  if (
-    !selectedCreaturePosition ||
-    selectedActionMode !== 'attack'
-  ) {
-    return [];
-  }
-
-  const creature = getCell(selectedCreaturePosition);
-
-  if (!creature || creature.owner_index !== 1 || creature.tired) {
-    return [];
-  }
-
-  const candidates = [
-    {
-      row: selectedCreaturePosition.row - 1,
-      col: selectedCreaturePosition.col,
-    },
-    {
-      row: selectedCreaturePosition.row + 1,
-      col: selectedCreaturePosition.col,
-    },
-    {
-      row: selectedCreaturePosition.row,
-      col: selectedCreaturePosition.col - 1,
-    },
-    {
-      row: selectedCreaturePosition.row,
-      col: selectedCreaturePosition.col + 1,
-    },
-  ];
-
-  return candidates.filter((position) => {
-    const isInsideBoard =
-      position.row >= 0 &&
-      position.row <= 2 &&
-      position.col >= 0 &&
-      position.col <= 2;
-
-    const cell = isInsideBoard ? getCell(position) : null;
-
-    return cell?.owner_index === 0;
-  });
-}
-
-function canDirectAttack() {
-  return Boolean(
-    selectedActionMode === 'attack' &&
-      selectedCreaturePosition &&
-      validAttackTargets().length === 0,
-  );
-}
-
-function selectedModeText() {
-  if (!gameState) {
-    return 'Premi “Nuova partita” per iniziare un test.';
-  }
-
-  if (selectedHandInstanceId) {
-    return 'Carta selezionata: per evocare un Mostro scegli una cella libera nella tua riga inferiore.';
-  }
-
-  if (selectedActionMode === 'move') {
-    return 'Movimento: scegli una cella libera ortogonalmente adiacente. Costa 1 mana e rende la creatura stanca.';
-  }
-
-  if (selectedActionMode === 'attack') {
-    if (validAttackTargets().length > 0) {
-      return 'Attacco: scegli una creatura IA ortogonalmente adiacente.';
-    }
-
-    return 'Nessun nemico è adiacente: puoi attaccare direttamente l’IA.';
-  }
-
-  if (selectedCreaturePosition) {
-    return 'Scegli Attacca o Muovi per la creatura selezionata.';
-  }
-
-  return 'Seleziona una carta o una tua creatura pronta.';
-}
-
-function setBusy(value) {
-  busy = value;
-  renderControls();
-}
-
-function renderControls() {
-  const canAct = isHumanTurn() && !busy;
-  const selectedCreature = findSelectedCreature();
-  const canUseCreatureActions = Boolean(
-    canAct &&
-      selectedCreature &&
-      selectedCreature.owner_index === 1 &&
-      !selectedCreature.tired,
-  );
-
-  const newMatchButton = byId('new-match-button');
-  const endTurnButton = byId('end-turn-button');
-  const refreshButton = byId('refresh-button');
-  const cancelButton = byId('cancel-selection-button');
-  const directAttackButton = byId('direct-attack-button');
-  const attackChoiceButton = byId('choose-attack-button');
-  const moveChoiceButton = byId('choose-move-button');
-  const instructions = byId('selection-instructions');
-
-  if (newMatchButton) {
-    newMatchButton.disabled = busy;
-  }
-
-  if (endTurnButton) {
-    endTurnButton.disabled = !canAct;
-  }
-
-  if (refreshButton) {
-    refreshButton.disabled = !matchId || busy;
-  }
-
-  if (cancelButton) {
-    cancelButton.disabled =
-      busy ||
-      (!selectedHandInstanceId &&
-        !selectedCreaturePosition &&
-        !selectedActionMode &&
-        !selectedAttackTarget);
-  }
-
-  if (directAttackButton) {
-    directAttackButton.disabled = !canAct || !canDirectAttack();
-  }
-
-  if (attackChoiceButton) {
-    attackChoiceButton.disabled = !canUseCreatureActions;
-  }
-
-  if (moveChoiceButton) {
-    const hasMana = (getHuman()?.current_mana ?? 0) >= 1;
-    const hasDestination =
-      validMovePositionsForSelectedCreature().length > 0;
-
-    moveChoiceButton.disabled =
-      !canUseCreatureActions || !hasMana || !hasDestination;
-  }
-
-  if (instructions) {
-    instructions.textContent = selectedModeText();
-  }
-
-  renderCreatureActionPanel();
-}
-
-function renderCreatureActionPanel() {
-  const panel = byId('creature-action-panel');
-  const nameElement = byId('selected-creature-name');
-  const detailsElement = byId('selected-creature-details');
-
-  if (!panel || !nameElement || !detailsElement) {
-    return;
-  }
-
-  const creature = findSelectedCreature();
-
-  if (
-    !creature ||
-    creature.owner_index !== 1 ||
-    creature.tired ||
-    !isHumanTurn()
-  ) {
-    panel.classList.add('hidden');
-    return;
-  }
-
-  panel.classList.remove('hidden');
-
-  const card = cardCache.get(creature.card_id);
-
-  nameElement.textContent = card?.name ?? 'Creatura selezionata';
-  detailsElement.textContent =
-    `ATK ${creature.attack} · HP ${creature.hp}/${creature.max_hp} · ` +
-    'Attacca gratuitamente oppure Muovi pagando 1 mana.';
-}
-
-async function api(path, options = {}) {
+function setBusy(x) { busy = x; controls(); }
+async function request(path, options = {}) {
   const token = await getAccessToken();
-
-  if (!token) {
-    throw new Error('Sessione assente. Effettua nuovamente il login.');
-  }
-
+  if (!token) throw new Error('Sessione scaduta: accedi nuovamente.');
   const controller = new AbortController();
-  const timeoutId = window.setTimeout(() => {
-    controller.abort();
-  }, REQUEST_TIMEOUT_MS);
-
+  const timeout = setTimeout(() => controller.abort(), 45000);
   try {
-    const response = await fetch(`${API_BASE}${path}`, {
-      method: options.method ?? 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-      signal: controller.signal,
-    });
-
-    const payload = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(
-        payload.error ?? `Errore API: risposta HTTP ${response.status}.`,
-      );
-    }
-
-    return payload;
+    const res = await fetch(`${API}${path}`, { method: options.method ?? 'GET', headers: { Authorization: `Bearer ${token}`, ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, body: options.body !== undefined ? JSON.stringify(options.body) : undefined, signal: controller.signal });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
+    return result;
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error(
-        'Il server Render non ha risposto entro 45 secondi. Riprova: il servizio potrebbe essersi appena riattivato.',
-      );
-    }
-
+    if (error?.name === 'AbortError') throw new Error('Server non raggiungibile entro 45 secondi. Verifica il deploy Render.');
     throw error;
-  } finally {
-    window.clearTimeout(timeoutId);
-  }
+  } finally { clearTimeout(timeout); }
 }
-
-async function getCard(cardId) {
-  if (cardCache.has(cardId)) {
-    return cardCache.get(cardId);
-  }
-
-  const { card } = await api(`/cards/${cardId}`);
-  cardCache.set(cardId, card);
-
-  return card;
+async function card(id) {
+  if (!cache.has(id)) { const result = await request(`/cards/${encodeURIComponent(id)}`); cache.set(id, result.card); }
+  return cache.get(id);
 }
-
-function renderStatus() {
-  const matchStatus = byId('match-status');
-  const turnStatus = byId('turn-status');
-  const phaseStatus = byId('phase-status');
-
-  if (!matchStatus || !turnStatus || !phaseStatus) {
-    return;
-  }
-
-  if (!gameState) {
-    matchStatus.textContent = 'Nessuna partita';
-    turnStatus.textContent = '—';
-    phaseStatus.textContent = '—';
-    return;
-  }
-
-  const activeLabel =
-    gameState.active_player_index === 1
-      ? 'Il tuo turno'
-      : 'Turno IA';
-
-  matchStatus.textContent =
-    gameState.status === 'finished'
-      ? 'Terminata'
-      : 'In corso';
-
-  turnStatus.textContent =
-    `${gameState.current_turn} · ${activeLabel}`;
-
-  phaseStatus.textContent = gameState.phase;
-}
-
-function renderPlayerSummary() {
-  const player = getHuman();
-  const opponent = getAi();
-
-  if (!player || !opponent) {
-    return;
-  }
-
-  const values = {
-    'player-life': player.life,
-    'player-mana': `${player.current_mana} / ${player.max_mana}`,
-    'player-hand-count': player.hand.length,
-    'player-deck-count': player.deck.length,
-    'player-graveyard-count': player.graveyard.length,
-    'opponent-life': opponent.life,
-    'opponent-hand-count': opponent.hand.length,
-    'opponent-deck-count': opponent.deck.length,
-    'opponent-graveyard-count': opponent.graveyard.length,
-  };
-
-  for (const [id, value] of Object.entries(values)) {
-    const element = byId(id);
-
-    if (element) {
-      element.textContent = String(value);
-    }
-  }
-}
-
-async function renderFieldSpell(player, elementId, ownerLabel) {
-  const element = byId(elementId);
-
-  if (!element) {
-    return;
-  }
-
-  if (!player?.field_spell) {
-    element.textContent = `${ownerLabel}: Nessuna Terraforma`;
-    return;
-  }
-
-  try {
-    const card = await getCard(player.field_spell.card_id);
-    element.textContent = `${ownerLabel}: ${card.name}`;
-  } catch {
-    element.textContent = `${ownerLabel}: Terraforma attiva`;
-  }
-}
-
-function rowClass(row) {
-  if (row === 0) {
-    return 'ai-row';
-  }
-
-  if (row === 1) {
-    return 'center-row';
-  }
-
-  return 'human-row';
-}
-
-function isValidMoveCell(position) {
-  return validMovePositions().some((candidate) =>
-    positionsEqual(candidate, position),
-  );
-}
-
-function isValidAttackTarget(position) {
-  return validAttackTargets().some((candidate) =>
-    positionsEqual(candidate, position),
-  );
-}
-
-function boardCellElement(position, cell, card) {
-  const button = document.createElement('button');
-
-  button.type = 'button';
-  button.className = 'board-cell';
-  button.dataset.row = String(position.row);
-  button.dataset.col = String(position.col);
-
-  const isSelectedCreature = positionsEqual(
-    position,
-    selectedCreaturePosition,
-  );
-
-  const isSelectedTarget = positionsEqual(
-    position,
-    selectedAttackTarget,
-  );
-
-  if (!cell) {
-    button.classList.add('empty');
-
-    if (isValidMoveCell(position)) {
-      button.classList.add('valid-move');
-    }
-
-    const zoneName =
-      position.row === 0
-        ? 'Riga IA'
-        : position.row === 1
-          ? 'Centro'
-          : 'Tua riga';
-
-    button.innerHTML = `
-      <span class="empty-label">${zoneName}</span>
-      <span class="cell-coordinate">[${position.row},${position.col}]</span>
-    `;
-
-    button.addEventListener('click', () => {
-      onBoardCellClick(position).catch(showUnexpectedError);
-    });
-
-    return button;
-  }
-
-  button.classList.add(
-    cell.owner_index === 1 ? 'human-card' : 'ai-card',
-  );
-
-  if (cell.tired) {
-    button.classList.add('tired');
-  }
-
-  if (isSelectedCreature) {
-    button.classList.add('selected-creature');
-  }
-
-  if (isValidAttackTarget(position)) {
-    button.classList.add('valid-target');
-  }
-
-  if (isSelectedTarget) {
-    button.classList.add('selected-target');
-  }
-
-  const ownerName =
-    cell.owner_index === 1
-      ? 'Tua creatura'
-      : 'Creatura IA';
-
-  const auraCount = cell.auras?.length ?? 0;
-
-  button.innerHTML = `
-    <span class="cell-coordinate">[${position.row},${position.col}]</span>
-    <span class="card-cost">${escapeHtml(card?.mana_cost ?? '')}</span>
-    <span class="card-type">${escapeHtml(card?.card_type ?? 'creatura')}</span>
-    <strong class="card-name">${escapeHtml(card?.name ?? 'Creatura sconosciuta')}</strong>
-    <span class="card-effect">${escapeHtml(card?.effect_text ?? '')}</span>
-    <span class="card-owner">${ownerName}${cell.tired ? ' · Stanca' : ' · Pronta'}</span>
-    <span class="card-stats">${cell.attack} / ${cell.hp}</span>
-    ${auraCount > 0 ? `<span class="card-aura">Aura: ${auraCount}</span>` : ''}
-  `;
-
-  button.addEventListener('click', () => {
-    onBoardCellClick(position).catch(showUnexpectedError);
-  });
-
-  return button;
-}
-
 async function renderBoard() {
-  const container = byId('shared-board');
-
-  if (!container) {
-    return;
-  }
-
-  container.innerHTML = '';
-
-  const board = getBoard();
-
-  for (let row = 0; row < 3; row += 1) {
-    const rowElement = document.createElement('div');
-    rowElement.className = `board-row ${rowClass(row)}`;
-
-    for (let col = 0; col < 3; col += 1) {
-      const position = { row, col };
-      const cell = board[row][col];
-      let card = null;
-
-      if (cell?.card_id) {
-        try {
-          card = await getCard(cell.card_id);
-        } catch {
-          card = null;
-        }
-      }
-
-      rowElement.appendChild(
-        boardCellElement(position, cell, card),
-      );
+  const root = el('shared-board');
+  if (!root) { message('Manca #shared-board in docs/index.html: aggiorna anche il file HTML.', 'error'); return; }
+  root.replaceChildren();
+  for (let row = 0; row < 3; row++) {
+    const wrap = document.createElement('div');
+    wrap.className = `board-row ${['ai-row', 'center-row', 'human-row'][row]}`;
+    for (let col = 0; col < 3; col++) {
+      const p = { row, col }, c = cell(p);
+      let definition = null;
+      if (c) try { definition = await card(c.card_id); } catch (error) { console.warn('Carta non disponibile', error); }
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'board-cell';
+      if (!c) button.classList.add('empty');
+      else button.classList.add(c.owner_index === 1 ? 'human-card' : 'ai-card');
+      if (c?.tired) button.classList.add('tired');
+      if (same(p, chosen)) button.classList.add('selected-creature');
+      if (mode === 'move' && moves().some(q => same(q, p))) button.classList.add('valid-move');
+      if (mode === 'attack' && targets().some(q => same(q, p))) button.classList.add('valid-target');
+      if (handId && row === 2 && !c) button.classList.add('valid-summon');
+      button.setAttribute('aria-label', c ? `${definition?.name ?? 'Creatura'}: ${c.owner_index === 0 ? 'IA' : 'Tu'}, ${c.attack} attacco, ${c.hp} vita, ${c.tired ? 'stanca' : 'pronta'}, riga ${row} colonna ${col}` : `Cella libera, riga ${row} colonna ${col}`);
+      button.innerHTML = c ? `<span class="cell-coordinate">[${row},${col}]</span><span class="card-type">${c.owner_index === 0 ? 'IA' : 'TU'} · ${c.tired ? 'STANCA' : 'PRONTA'}</span><strong class="card-name">${escape(definition?.name ?? 'Creatura')}</strong><span class="card-effect">${escape(definition?.effect_text ?? '')}</span><span class="card-stats">${c.attack} / ${c.hp}</span>` : `<span class="empty-label">${['Riga IA', 'Centro', 'Riga Tu'][row]}<br>[${row},${col}]</span>`;
+      button.onclick = () => handleCell(p).catch(showError);
+      wrap.append(button);
     }
-
-    container.appendChild(rowElement);
+    root.append(wrap);
   }
 }
-
-function handCardElement(instance, card) {
-  const button = document.createElement('button');
-
-  button.type = 'button';
-  button.className = 'hand-card';
-
-  if (selectedHandInstanceId === instance.instance_id) {
-    button.classList.add('selected-hand-card');
-  }
-
-  const stats =
-    card.attack !== null &&
-    card.attack !== undefined &&
-    card.hp !== null &&
-    card.hp !== undefined
-      ? `${card.attack} / ${card.hp}`
-      : card.rarity ?? '';
-
-  button.innerHTML = `
-    <span class="card-cost">${escapeHtml(card.mana_cost)}</span>
-    <span class="card-type">${escapeHtml(card.card_type)}</span>
-    <strong class="card-name">${escapeHtml(card.name)}</strong>
-    <span class="card-effect">${escapeHtml(
-      card.effect_text ?? 'Nessun effetto.',
-    )}</span>
-    <span class="card-stats">${escapeHtml(stats)}</span>
-  `;
-
-  button.addEventListener('click', () => {
-    onHandCardClick(instance.instance_id).catch(showUnexpectedError);
-  });
-
-  return button;
-}
-
 async function renderHand() {
-  const container = byId('player-hand');
-  const player = getHuman();
-
-  if (!container) {
-    return;
-  }
-
-  container.innerHTML = '';
-
-  if (!player) {
-    return;
-  }
-
-  for (const instance of player.hand) {
+  const root = el('player-hand'); if (!root) return;
+  root.replaceChildren();
+  for (const inst of human()?.hand ?? []) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'hand-card';
     try {
-      const card = await getCard(instance.card_id);
-      container.appendChild(handCardElement(instance, card));
-    } catch {
-      const fallback = document.createElement('button');
-
-      fallback.type = 'button';
-      fallback.className = 'hand-card';
-      fallback.disabled = true;
-      fallback.textContent = 'Carta non caricabile';
-
-      container.appendChild(fallback);
-    }
+      const d = await card(inst.card_id);
+      if (handId === inst.instance_id) button.classList.add('selected-hand-card');
+      if (d.mana_cost > human().current_mana) button.classList.add('unaffordable');
+      button.innerHTML = `<span class="card-cost">${escape(d.mana_cost)}</span><span class="card-type">${escape(d.card_type)}</span><strong class="card-name">${escape(d.name)}</strong><span class="card-effect">${escape(d.effect_text ?? '')}</span><span class="card-stats">${d.attack ?? '—'} / ${d.hp ?? '—'}</span>`;
+      button.onclick = async () => {
+        if (!turn() || busy) return;
+        handId = handId === inst.instance_id ? null : inst.instance_id;
+        chosen = null; mode = null;
+        await render();
+        if (handId && (d.card_type === 'sorcery' || d.card_type === 'instant' || d.card_type === 'terraforma') && d.effect_json?.target !== 'any_creature' && d.effect_json?.type !== 'return_hand') message('Clicca una cella qualunque della plancia per giocare questa carta.', 'success');
+      };
+    } catch (error) { button.textContent = `Carta non disponibile: ${error.message}`; button.disabled = true; }
+    root.append(button);
   }
 }
-
 async function render() {
-  renderStatus();
-  renderPlayerSummary();
-
-  await Promise.all([
-    renderFieldSpell(getAi(), 'opponent-field-spell', 'IA'),
-    renderFieldSpell(getHuman(), 'player-field-spell', 'Tu'),
-    renderBoard(),
-    renderHand(),
-  ]);
-
-  renderControls();
+  if (el('match-status')) el('match-status').textContent = state ? state.status === 'finished' ? 'Terminata' : 'In corso' : 'Nessuna partita';
+  if (el('turn-status')) el('turn-status').textContent = state ? `${state.current_turn} · ${state.active_player_index === 1 ? 'Tu' : 'IA'}` : '—';
+  if (el('phase-status')) el('phase-status').textContent = state?.phase === 'main' ? 'Principale' : state?.phase ?? '—';
+  for (const [id, value] of Object.entries({ 'player-life': human()?.life ?? 20, 'player-mana': `${human()?.current_mana ?? 0} / ${human()?.max_mana ?? 0}`, 'player-hand-count': human()?.hand?.length ?? 0, 'player-deck-count': human()?.deck?.length ?? 0, 'player-graveyard-count': human()?.graveyard?.length ?? 0, 'opponent-life': ai()?.life ?? 20, 'opponent-hand-count': ai()?.hand?.length ?? 0, 'opponent-deck-count': ai()?.deck?.length ?? 0, 'opponent-graveyard-count': ai()?.graveyard?.length ?? 0 })) if (el(id)) el(id).textContent = value;
+  for (const [id, owner, label] of [['player-field-spell', human(), 'Tu'], ['opponent-field-spell', ai(), 'IA']]) {
+    if (!el(id)) continue;
+    let text = `${label}: Nessuna Terraforma`;
+    if (owner?.field_spell) try { text = `${label}: ${(await card(owner.field_spell.card_id)).name}`; } catch { text = `${label}: Terraforma attiva`; }
+    el(id).textContent = text;
+  }
+  await renderBoard(); await renderHand(); controls();
 }
-
-async function refreshState() {
-  if (!matchId) {
-    return;
-  }
-
-  const { state } = await api(`/match/${matchId}`);
-  gameState = state;
+async function logs() {
+  if (!el('match-logs') || !matchId) return;
+  const { logs: events } = await request(`/match/${matchId}/logs?limit=100`);
+  el('match-logs').replaceChildren();
+  for (const e of events ?? []) { const li = document.createElement('li'); li.textContent = e.log_data?.description ?? e.log_data?.action_type ?? 'Evento'; el('match-logs').append(li); }
+  el('match-logs').scrollTop = el('match-logs').scrollHeight;
 }
-
-async function refreshLogs() {
-  const list = byId('match-logs');
-
-  if (!list) {
-    return;
-  }
-
-  if (!matchId) {
-    list.innerHTML = '';
-    return;
-  }
-
-  const { logs } = await api(`/match/${matchId}/logs?limit=100`);
-  list.innerHTML = '';
-
-  for (const item of logs) {
-    const entry = item.log_data ?? {};
-    const line = document.createElement('li');
-
-    line.textContent =
-      entry.description ??
-      entry.action_type ??
-      'Evento partita';
-
-    list.appendChild(line);
-  }
-
-  list.scrollTop = list.scrollHeight;
-}
-
-async function refreshAll() {
-  await refreshState();
-  await refreshLogs();
-  await render();
-}
-
-async function createMatch() {
-  if (busy) {
-    return;
-  }
-
+async function action(path, body, success) {
+  if (busy) return;
   setBusy(true);
-  clearSelection();
-  cardCache = new Map();
-  setGameMessage('Creazione della partita tattica in corso…');
-
   try {
-    const payload = await api('/match/create', {
-      method: 'POST',
-      body: {},
-    });
-
-    matchId = payload.match_id;
-    gameState = payload.state;
-
-    await refreshLogs();
+    const result = await request(`/match/${matchId}/${path}`, { method: 'POST', body });
+    state = result.state; clear();
     await render();
-
-    setGameMessage(
-      'Partita pronta. Seleziona una carta dalla mano e schierala nella tua riga.',
-      'success',
-    );
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile creare la partita.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
+    try { await logs(); } catch (error) { console.warn('Log non aggiornato', error); }
+    message(state.status === 'finished' ? state.winner_index === 1 ? 'Hai vinto!' : 'L’IA ha vinto.' : success, 'success');
+  } catch (error) { showError(error); }
+  finally { setBusy(false); }
 }
-
-async function onHandCardClick(instanceId) {
-  if (!isHumanTurn() || busy) {
-    return;
+async function handleCell(p) {
+  if (!turn() || busy) return;
+  const c = cell(p);
+  if (handId) {
+    const inst = human().hand.find(x => x.instance_id === handId);
+    if (!inst) { clear(); return render(); }
+    const d = await card(inst.card_id);
+    let options = {};
+    if (d.card_type === 'monster' || d.card_type === 'mostrissimo') {
+      if (p.row !== 2 || c) return message('Evoca solo nelle celle libere della riga Tu, coordinate [2,0], [2,1], [2,2].', 'error');
+      options = { position: p };
+    } else if (d.card_type === 'aura' || d.effect_json?.target === 'any_creature' || d.effect_json?.type === 'return_hand') {
+      if (!c) return message('Scegli una creatura bersaglio.', 'error');
+      options = { targetInstanceId: c.instance_id };
+    }
+    return action('play-card', { cardInstanceId: inst.instance_id, options }, 'Carta giocata.');
   }
-
-  selectedHandInstanceId =
-    selectedHandInstanceId === instanceId
-      ? null
-      : instanceId;
-
-  selectedCreaturePosition = null;
-  selectedActionMode = null;
-  selectedAttackTarget = null;
-
-  await render();
+  if (mode === 'move') {
+    if (!moves().some(q => same(q, p))) return message('Scegli una cella libera ortogonale, fuori dalla riga IA.', 'error');
+    return action('move', { from: chosen, to: p }, 'Creatura spostata: -1 mana, rimane pronta.');
+  }
+  if (mode === 'attack') {
+    if (!targets().some(q => same(q, p))) return message('Scegli una creatura IA ortogonalmente adiacente.', 'error');
+    return action('attack', { attackerPosition: chosen, target: { type: 'creature', position: p } }, 'Attacco risolto.');
+  }
+  if (c?.owner_index === 1) {
+    if (c.tired) return message('Questa creatura è stanca: non può attaccare né muoversi.', 'error');
+    chosen = p; handId = null; mode = null; return render();
+  }
+  if (c?.owner_index === 0) message('Seleziona prima una tua creatura pronta.', 'error');
 }
-
-async function onBoardCellClick(position) {
-  if (!isHumanTurn() || busy) {
-    return;
-  }
-
-  const cell = getCell(position);
-
-  if (selectedHandInstanceId) {
-    await handleCardPlacementOrTarget(position, cell);
-    return;
-  }
-
-  if (selectedActionMode === 'move') {
-    if (!isValidMoveCell(position)) {
-      setGameMessage(
-        'Scegli una cella libera ortogonalmente adiacente.',
-        'error',
-      );
-      return;
-    }
-
-    await performMove(selectedCreaturePosition, position);
-    return;
-  }
-
-  if (selectedActionMode === 'attack') {
-    if (cell?.owner_index === 0 && isValidAttackTarget(position)) {
-      selectedAttackTarget = position;
-
-      await performAttack({
-        type: 'creature',
-        position,
-      });
-
-      return;
-    }
-
-    setGameMessage(
-      'Scegli una creatura IA ortogonalmente adiacente.',
-      'error',
-    );
-    return;
-  }
-
-  if (cell?.owner_index === 1) {
-    if (cell.tired) {
-      setGameMessage(
-        'Questa creatura è stanca: non può attaccare né muoversi.',
-        'error',
-      );
-      return;
-    }
-
-    selectedCreaturePosition = position;
-    selectedHandInstanceId = null;
-    selectedActionMode = null;
-    selectedAttackTarget = null;
-
-    try {
-      await getCard(cell.card_id);
-    } catch {
-      // La carta resta selezionabile anche se il dettaglio non si carica.
-    }
-
-    await render();
-    return;
-  }
-
-  if (cell?.owner_index === 0) {
-    setGameMessage(
-      'Seleziona prima una tua creatura pronta.',
-      'error',
-    );
-  }
-}
-
-async function handleCardPlacementOrTarget(position, cell) {
-  const instance = findHandInstance(selectedHandInstanceId);
-
-  if (!instance) {
-    clearSelection();
-    await render();
-    return;
-  }
-
-  const card = await getCard(instance.card_id);
-
-  if (
-    card.card_type === 'monster' ||
-    card.card_type === 'mostrissimo'
-  ) {
-    if (position.row !== 2 || cell) {
-      setGameMessage(
-        'Puoi evocare creature solo in una cella libera della tua riga inferiore.',
-        'error',
-      );
-      return;
-    }
-
-    await performPlayCard(instance.instance_id, {
-      position,
-    });
-
-    return;
-  }
-
-  if (card.card_type === 'aura') {
-    if (!cell) {
-      setGameMessage(
-        'Un’Aura richiede una creatura bersaglio.',
-        'error',
-      );
-      return;
-    }
-
-    await performPlayCard(instance.instance_id, {
-      targetInstanceId: cell.instance_id,
-    });
-
-    return;
-  }
-
-  const needsCreatureTarget =
-    card.effect_json?.target === 'any_creature' ||
-    card.effect_json?.type === 'return_hand';
-
-  if (needsCreatureTarget) {
-    if (!cell) {
-      setGameMessage(
-        'Questa carta richiede una creatura bersaglio.',
-        'error',
-      );
-      return;
-    }
-
-    await performPlayCard(instance.instance_id, {
-      targetInstanceId: cell.instance_id,
-    });
-
-    return;
-  }
-
-  await performPlayCard(instance.instance_id, {});
-}
-
-async function chooseAttack() {
-  const creature = findSelectedCreature();
-
-  if (!creature || creature.owner_index !== 1 || creature.tired) {
-    return;
-  }
-
-  selectedActionMode = 'attack';
-  selectedAttackTarget = null;
-  selectedHandInstanceId = null;
-
-  await render();
-
-  if (canDirectAttack()) {
-    setGameMessage(
-      'Nessun nemico IA è adiacente: puoi attaccare direttamente l’IA.',
-      'success',
-    );
-  } else {
-    setGameMessage(
-      'Seleziona una creatura IA ortogonalmente adiacente.',
-      'success',
-    );
-  }
-}
-
-async function chooseMove() {
-  const creature = findSelectedCreature();
-
-  if (!creature || creature.owner_index !== 1 || creature.tired) {
-    return;
-  }
-
-  if ((getHuman()?.current_mana ?? 0) < 1) {
-    setGameMessage(
-      'Servono 1 mana per muovere una creatura.',
-      'error',
-    );
-    return;
-  }
-
-  if (validMovePositionsForSelectedCreature().length === 0) {
-    setGameMessage(
-      'Non esistono celle libere ortogonalmente adiacenti.',
-      'error',
-    );
-    return;
-  }
-
-  selectedActionMode = 'move';
-  selectedAttackTarget = null;
-  selectedHandInstanceId = null;
-
-  await render();
-
-  setGameMessage(
-    'Scegli una cella libera adiacente per muovere la creatura.',
-    'success',
-  );
-}
-
-async function performPlayCard(instanceId, options) {
-  if (!matchId) {
-    setGameMessage('Crea prima una nuova partita.', 'error');
-    return;
-  }
-
-  setBusy(true);
-
+async function newMatch() {
+  if (busy) return;
+  setBusy(true); message('Creazione partita in corso…');
   try {
-    const { state } = await api(`/match/${matchId}/play-card`, {
-      method: 'POST',
-      body: {
-        cardInstanceId: instanceId,
-        options,
-      },
-    });
-
-    gameState = state;
-    clearSelection();
-
-    await refreshLogs();
+    const result = await request('/match/create', { method: 'POST', body: {} });
+    matchId = result.match_id; state = result.state; clear();
+    localStorage.setItem('bellum:last-match', matchId);
     await render();
-
-    setGameMessage('Carta giocata.', 'success');
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile giocare la carta.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
+    try { await logs(); } catch (error) { console.warn('Log non aggiornato', error); }
+    message('Partita pronta: scegli un Mostro in mano e clicca una cella nella riga Tu.', 'success');
+  } catch (error) { showError(error); } finally { setBusy(false); }
 }
-
-async function performMove(from, to) {
-  if (!matchId) {
-    setGameMessage('Crea prima una nuova partita.', 'error');
-    return;
-  }
-
-  setBusy(true);
-
-  try {
-    const { state } = await api(`/match/${matchId}/move`, {
-      method: 'POST',
-      body: {
-        from,
-        to,
-      },
-    });
-
-    gameState = state;
-    clearSelection();
-
-    await refreshLogs();
-    await render();
-
-    setGameMessage(
-      'Creatura mossa: 1 mana speso e creatura stanca.',
-      'success',
-    );
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile muovere la creatura.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function performAttack(target) {
-  if (!matchId || !selectedCreaturePosition) {
-    setGameMessage(
-      'Seleziona prima una creatura attaccante.',
-      'error',
-    );
-    return;
-  }
-
-  setBusy(true);
-
-  try {
-    const { state } = await api(`/match/${matchId}/attack`, {
-      method: 'POST',
-      body: {
-        attackerPosition: selectedCreaturePosition,
-        target,
-      },
-    });
-
-    gameState = state;
-    clearSelection();
-
-    await refreshLogs();
-    await render();
-
-    setGameMessage(
-      'Attacco risolto. La creatura ora è stanca.',
-      'success',
-    );
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile risolvere l’attacco.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function performDirectAttack() {
-  if (!canDirectAttack()) {
-    setGameMessage(
-      'L’attacco diretto è disponibile solo se nessun nemico IA è ortogonalmente adiacente.',
-      'error',
-    );
-    return;
-  }
-
-  await performAttack({
-    type: 'player',
-    playerIndex: 0,
-  });
-}
-
-async function endHumanTurn() {
-  if (!matchId || busy) {
-    return;
-  }
-
-  setBusy(true);
-  setGameMessage('L’IA sta valutando la scacchiera…');
-
-  try {
-    const { state } = await api(`/match/${matchId}/end-turn`, {
-      method: 'POST',
-      body: {},
-    });
-
-    gameState = state;
-    clearSelection();
-
-    await refreshLogs();
-    await render();
-
-    setGameMessage(
-      gameState.status === 'finished'
-        ? 'La partita è terminata.'
-        : 'È di nuovo il tuo turno.',
-      'success',
-    );
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile terminare il turno.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function handleRefresh() {
-  if (!matchId || busy) {
-    return;
-  }
-
-  setBusy(true);
-
-  try {
-    await refreshAll();
-    setGameMessage('Stato aggiornato.', 'success');
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile aggiornare lo stato.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function handleLogout() {
-  try {
-    await signOut();
-
-    matchId = null;
-    gameState = null;
-    cardCache = new Map();
-    clearSelection();
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile uscire.',
-      'error',
-    );
-  }
-}
-
-function showUnexpectedError(error) {
-  console.error(error);
-
-  setGameMessage(
-    error instanceof Error
-      ? error.message
-      : 'Errore inatteso durante l’azione.',
-    'error',
-  );
-}
-
-async function initializeGame() {
-  if (initialized) {
-    return;
-  }
-
-  const user = await getCurrentUser();
-
-  if (!user) {
-    return;
-  }
-
+function showError(error) { console.error(error); message(error instanceof Error ? error.message : 'Errore sconosciuto.', 'error'); }
+async function init() {
+  if (initialized) return;
+  const user = await getCurrentUser(); if (!user) return;
   initialized = true;
-
-  const username = usernameFromEmail(user.email ?? 'Giocatore');
-  const signedInUser = byId('signed-in-user');
-  const playerTitle = byId('player-title');
-
-  if (signedInUser) {
-    signedInUser.textContent = `@${username}`;
-  }
-
-  if (playerTitle) {
-    playerTitle.textContent = username || 'Tu';
-  }
-
-  byId('new-match-button')?.addEventListener('click', () => {
-    createMatch().catch(showUnexpectedError);
-  });
-
-  byId('choose-attack-button')?.addEventListener('click', () => {
-    chooseAttack().catch(showUnexpectedError);
-  });
-
-  byId('choose-move-button')?.addEventListener('click', () => {
-    chooseMove().catch(showUnexpectedError);
-  });
-
-  byId('cancel-creature-action-button')?.addEventListener('click', () => {
-    clearSelection();
-    render().catch(showUnexpectedError);
-  });
-
-  byId('direct-attack-button')?.addEventListener('click', () => {
-    performDirectAttack().catch(showUnexpectedError);
-  });
-
-  byId('cancel-selection-button')?.addEventListener('click', () => {
-    clearSelection();
-    render().catch(showUnexpectedError);
-  });
-
-  byId('end-turn-button')?.addEventListener('click', () => {
-    endHumanTurn().catch(showUnexpectedError);
-  });
-
-  byId('refresh-button')?.addEventListener('click', () => {
-    handleRefresh().catch(showUnexpectedError);
-  });
-
-  byId('logout-button')?.addEventListener('click', () => {
-    handleLogout().catch(showUnexpectedError);
-  });
-
+  const username = usernameFromEmail(user.email);
+  if (el('signed-in-user')) el('signed-in-user').textContent = `@${username}`;
+  if (el('player-title')) el('player-title').textContent = username || 'Tu';
+  el('new-match-button')?.addEventListener('click', () => newMatch().catch(showError));
+  el('choose-attack-button')?.addEventListener('click', () => { if (!chosen || busy) return; mode = 'attack'; render().catch(showError); });
+  el('choose-move-button')?.addEventListener('click', () => { if (!chosen || busy) return; mode = 'move'; render().catch(showError); });
+  el('direct-attack-button')?.addEventListener('click', () => { if (chosen && mode === 'attack' && !targets().length) action('attack', { attackerPosition: chosen, target: { type: 'player', playerIndex: 0 } }, 'Attacco diretto risolto.'); });
+  for (const id of ['cancel-creature-action-button', 'cancel-selection-button']) el(id)?.addEventListener('click', () => { clear(); render().catch(showError); });
+  el('end-turn-button')?.addEventListener('click', () => { if (busy || !turn()) return; message('L’IA sta giocando…'); action('end-turn', {}, 'È di nuovo il tuo turno.'); });
+  el('refresh-button')?.addEventListener('click', async () => { if (busy || !matchId) return; setBusy(true); try { state = (await request(`/match/${matchId}`)).state; await render(); await logs(); message('Stato aggiornato.', 'success'); } catch (error) { showError(error); } finally { setBusy(false); } });
+  el('logout-button')?.addEventListener('click', () => { signOut().then(() => { matchId = null; state = null; clear(); }).catch(showError); });
   await render();
+  const previous = localStorage.getItem('bellum:last-match');
+  if (previous) {
+    try { const result = await request(`/match/${previous}`); if (result.state?.state_version === 2 && result.state.players?.[1]?.user_id === user.id) { matchId = previous; state = result.state; await render(); await logs(); message('Partita precedente ripristinata.', 'success'); } }
+    catch (error) { console.warn('Partita precedente non ripristinata', error); }
+  }
 }
-
-window.addEventListener('bellum:auth-ready', () => {
-  initializeGame().catch(showUnexpectedError);
-});
-
-getCurrentUser()
-  .then((user) => {
-    if (user) {
-      return initializeGame();
-    }
-
-    return undefined;
-  })
-  .catch(showUnexpectedError);
+window.addEventListener('bellum:auth-ready', () => init().catch(showError));
+getCurrentUser().then(user => { if (user) return init(); }).catch(showError);
