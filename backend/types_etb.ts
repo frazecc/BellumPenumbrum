@@ -1,0 +1,94 @@
+export type PlayerIndex = 0 | 1;
+export type MatchStatus = 'not_started' | 'running' | 'finished';
+export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
+export type CardType = 'monster' | 'mostrissimo' | 'sorcery' | 'instant' | 'terraforma' | 'aura';
+export type EffectType = 'draw' | 'damage' | 'damage_creature' | 'heal' | 'discard' | 'return_hand' | 'destroy' | 'buff' | 'custom';
+export type EffectTarget = 'self' | 'opponent' | 'any_creature' | 'all_creatures' | 'all_creatures_self' | 'all_creatures_opponent';
+export type EffectDefinition = {
+  type: EffectType;
+  amount?: number;
+  target?: EffectTarget;
+  timing?: 'on_play' | 'instant' | 'on_death';
+  effect_id?: string;
+};
+export type CardData = {
+  id: string;
+  name: string;
+  faction_id: number | null;
+  faction_code: string;
+  card_type: CardType;
+  mana_cost: number;
+  sacrifice_cost: number;
+  attack: number | null;
+  hp: number | null;
+  subtype: string | null;
+  rarity: string;
+  effect_text: string | null;
+  effect_json: EffectDefinition | null;
+  effect_on_death_json: EffectDefinition | null;
+  flavor_text: string | null;
+  image_url: string | null;
+};
+export type CardInstance = { instance_id: string; card_id: string };
+export type BoardCellAura = { instance_id: string; card_id: string };
+export type BoardCellFieldSpell = { instance_id: string; card_id: string };
+export type BoardCell = {
+  instance_id: string;
+  card_id: string;
+  owner_index: PlayerIndex;
+  attack: number;
+  hp: number;
+  max_hp: number;
+  tired: boolean;
+  auras: BoardCellAura[];
+};
+export type SharedBoard = {
+  rows: [
+    [BoardCell | null, BoardCell | null, BoardCell | null],
+    [BoardCell | null, BoardCell | null, BoardCell | null],
+    [BoardCell | null, BoardCell | null, BoardCell | null]
+  ];
+};
+export type PlayerState = {
+  player_index: PlayerIndex;
+  user_id: string | null;
+  life: number;
+  max_mana: number;
+  current_mana: number;
+  deck: CardInstance[];
+  hand: CardInstance[];
+  graveyard: CardInstance[];
+  extra_deck: CardInstance[];
+  color_counters: Record<string, number>;
+  field_spell: BoardCellFieldSpell | null;
+};
+export type Position = { row: number; col: number };
+export type AttackTarget = { type: 'creature'; position: Position } | { type: 'player'; playerIndex: PlayerIndex };
+export type PlayCardOptions = { position?: Position; targetInstanceId?: string };
+export type GameState = {
+  state_version: 2;
+  match_id: string;
+  status: MatchStatus;
+  players: [PlayerState, PlayerState];
+  board: SharedBoard;
+  current_turn: number;
+  active_player_index: PlayerIndex;
+  phase: TurnPhase;
+  anti_loop_counter: number;
+  winner_index: PlayerIndex | null;
+};
+export type MatchLogEntry = {
+  turn: number;
+  phase: TurnPhase;
+  player_index: number;
+  action_type: string;
+  card_id?: string;
+  instance_id?: string;
+  target_instance_id?: string;
+  target_player_index?: PlayerIndex;
+  amount?: number;
+  position?: Position | null;
+  from_position?: Position | null;
+  to_position?: Position | null;
+  description: string;
+};
