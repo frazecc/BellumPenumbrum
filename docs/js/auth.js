@@ -2,10 +2,9 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 const SUPABASE_URL = 'https://dgsqxnmrjfvklnjliplh.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_ZwwwsHnjEWNbe2CnDKsTSA_8ljXZlOG';
+const TEST_EMAIL_DOMAIN = '@test.local';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-const TEST_EMAIL_DOMAIN = '@test.local';
 
 const authScreen = document.getElementById('auth-screen');
 const gameScreen = document.getElementById('game-screen');
@@ -17,8 +16,8 @@ const authMessage = document.getElementById('auth-message');
 const signedInUser = document.getElementById('signed-in-user');
 const logoutButton = document.getElementById('logout-button');
 
-function usernameFromEmail(email) {
-  const normalizedEmail = String(email || '').trim().toLowerCase();
+export function usernameFromEmail(email) {
+  const normalizedEmail = String(email ?? '').trim().toLowerCase();
 
   if (normalizedEmail.endsWith(TEST_EMAIL_DOMAIN)) {
     return normalizedEmail.slice(0, -TEST_EMAIL_DOMAIN.length);
@@ -27,22 +26,57 @@ function usernameFromEmail(email) {
   return normalizedEmail.split('@')[0] || '';
 }
 
+export async function getCurrentUser() {
+  const { data, error } = await supabase.auth.getUser();
+
+  if (error) {
+    console.error('Errore nel recupero dell’utente:', error);
+    return null;
+  }
+
+  return data.user ?? null;
+}
+
+export async function getAccessToken() {
+  const { data, error } = await supabase.auth.getSession();
+
+  if (error) {
+    console.error('Errore nel recupero della sessione:', error);
+    return null;
+  }
+
+  return data.session?.access_token ?? null;
+}
+
+export async function signOut() {
+  const { error } = await supabase.auth.signOut();
+
+  if (error) {
+    throw error;
+  }
+}
+
 function setAuthMessage(message = '', type = '') {
   if (!authMessage) return;
 
   authMessage.textContent = message;
-  authMessage.dataset.state = type;
+  authMessage.className = `form-message ${type}`.trim();
   authMessage.hidden = !message;
 }
 
 function setLoginLoading(isLoading) {
   if (loginButton) {
     loginButton.disabled = isLoading;
-    loginButton.textContent = isLoading ? 'Accesso in corsoâ€¦' : 'Accedi';
+    loginButton.textContent = isLoading ? 'Accesso in corso…' : 'Accedi';
   }
 
-  if (usernameInput) usernameInput.disabled = isLoading;
-  if (passwordInput) passwordInput.disabled = isLoading;
+  if (usernameInput) {
+    usernameInput.disabled = isLoading;
+  }
+
+  if (passwordInput) {
+    passwordInput.disabled = isLoading;
+  }
 }
 
 function showAuthScreen() {
@@ -63,6 +97,14 @@ function showGameScreen(user) {
   if (signedInUser) {
     signedInUser.textContent = username ? `@${username}` : 'Giocatore';
   }
+
+  window.dispatchEvent(
+    new CustomEvent('bellum:auth-ready', {
+      detail: {
+        user,
+      },
+    }),
+  );
 }
 
 async function loadSession() {
@@ -87,15 +129,17 @@ async function handleLogin(event) {
   event.preventDefault();
   setAuthMessage();
 
-  const username = String(usernameInput?.value || '').trim().toLowerCase();
-  const password = String(passwordInput?.value || '');
+  const username = String(usernameInput?.value ?? '').trim().toLowerCase();
+  const password = String(passwordInput?.value ?? '');
 
   if (!username || !password) {
     setAuthMessage('Inserisci nome utente e password.', 'error');
     return;
   }
 
-  const email = username.includes('@') ? username : `${username}${TEST_EMAIL_DOMAIN}`;
+  const email = username.includes('@')
+    ? username
+    : `${username}${TEST_EMAIL_DOMAIN}`;
 
   setLoginLoading(true);
 
@@ -110,7 +154,10 @@ async function handleLogin(event) {
       return;
     }
 
-    passwordInput.value = '';
+    if (passwordInput) {
+      passwordInput.value = '';
+    }
+
     setAuthMessage('Accesso eseguito.', 'success');
     showGameScreen(data.user);
   } catch (error) {
@@ -124,17 +171,19 @@ async function handleLogin(event) {
 async function handleLogout() {
   setAuthMessage();
 
-  const { error } = await supabase.auth.signOut();
+  try {
+    await signOut();
 
-  if (error) {
+    if (loginForm) {
+      loginForm.reset();
+    }
+
+    showAuthScreen();
+    setAuthMessage('Sessione terminata.', 'success');
+  } catch (error) {
     console.error('Errore durante il logout:', error);
     setAuthMessage('Impossibile chiudere la sessione. Riprova.', 'error');
-    return;
   }
-
-  if (loginForm) loginForm.reset();
-  showAuthScreen();
-  setAuthMessage('Sessione terminata.', 'success');
 }
 
 loginForm?.addEventListener('submit', handleLogin);
@@ -143,9 +192,10 @@ logoutButton?.addEventListener('click', handleLogout);
 supabase.auth.onAuthStateChange((_event, session) => {
   if (session?.user) {
     showGameScreen(session.user);
-  } else {
-    showAuthScreen();
+    return;
   }
+
+  showAuthScreen();
 });
 
 loadSession();
