@@ -11,8 +11,9 @@ const REQUEST_TIMEOUT_MS = 45000;
 let matchId = null;
 let gameState = null;
 let selectedHandInstanceId = null;
-let selectedAttacker = null;
-let selectedTarget = null;
+let selectedCreaturePosition = null;
+let selectedActionMode = null;
+let selectedAttackTarget = null;
 let cardCache = new Map();
 let busy = false;
 let initialized = false;
@@ -49,6 +50,10 @@ function getAi() {
   return gameState?.players?.[0] ?? null;
 }
 
+function getBoard() {
+  return gameState?.board?.rows ?? null;
+}
+
 function isHumanTurn() {
   return (
     gameState?.status === 'running' &&
@@ -57,34 +62,169 @@ function isHumanTurn() {
   );
 }
 
+function positionsEqual(first, second) {
+  return Boolean(
+    first &&
+      second &&
+      first.row === second.row &&
+      first.col === second.col,
+  );
+}
+
+function isOrthogonallyAdjacent(first, second) {
+  if (!first || !second) {
+    return false;
+  }
+
+  return (
+    Math.abs(first.row - second.row) +
+      Math.abs(first.col - second.col) ===
+    1
+  );
+}
+
+function getCell(position) {
+  return getBoard()?.[position.row]?.[position.col] ?? null;
+}
+
+function findHandInstance(instanceId) {
+  return (
+    getHuman()?.hand?.find(
+      (instance) => instance.instance_id === instanceId,
+    ) ?? null
+  );
+}
+
+function findSelectedCreature() {
+  if (!selectedCreaturePosition) {
+    return null;
+  }
+
+  return getCell(selectedCreaturePosition);
+}
+
 function clearSelection() {
   selectedHandInstanceId = null;
-  selectedAttacker = null;
-  selectedTarget = null;
+  selectedCreaturePosition = null;
+  selectedActionMode = null;
+  selectedAttackTarget = null;
 }
 
 function selectedModeText() {
   if (selectedHandInstanceId) {
-    return 'Carta selezionata: scegli una cella libera o una creatura bersaglio.';
+    return 'Carta selezionata: scegli una cella della tua riga o una creatura bersaglio.';
   }
 
-  if (selectedAttacker) {
-    return 'Attaccante selezionato: scegli una creatura IA oppure Attacca IA, poi conferma.';
+  if (selectedActionMode === 'move') {
+    return 'Movimento: scegli una cella libera ortogonalmente adiacente. Costa 1 mana e stanca la creatura.';
   }
 
-  return 'Seleziona una carta dalla mano oppure una tua creatura per attaccare.';
+  if (selectedActionMode === 'attack') {
+    const targets = validAttackTargets();
+
+    if (targets.length > 0) {
+      return 'Attacco: scegli una creatura IA ortogonalmente adiacente.';
+    }
+
+    return 'Attacco diretto disponibile: non ci sono nemici IA ortogonalmente adiacenti.';
+  }
+
+  if (selectedCreaturePosition) {
+    return 'Scegli Attacca o Muovi per la creatura selezionata.';
+  }
+
+  return 'Seleziona una carta per giocarla o una tua creatura pronta per scegliere Attacca o Muovi.';
+}
+
+function validMovePositions() {
+  if (!selectedCreaturePosition || !selectedActionMode || selectedActionMode !== 'move') {
+    return [];
+  }
+
+  const creature = getCell(selectedCreaturePosition);
+
+  if (!creature || creature.owner_index !== 1 || creature.tired) {
+    return [];
+  }
+
+  const candidates = [
+    { row: selectedCreaturePosition.row - 1, col: selectedCreaturePosition.col },
+    { row: selectedCreaturePosition.row + 1, col: selectedCreaturePosition.col },
+    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col - 1 },
+    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col + 1 },
+  ];
+
+  return candidates.filter((position) => {
+    const inBoard =
+      position.row >= 0 &&
+      position.row <= 2 &&
+      position.col >= 0 &&
+      position.col <= 2;
+
+    return inBoard && !getCell(position);
+  });
+}
+
+function validAttackTargets() {
+  if (!selectedCreaturePosition || selectedActionMode !== 'attack') {
+    return [];
+  }
+
+  const creature = getCell(selectedCreaturePosition);
+
+  if (!creature || creature.owner_index !== 1 || creature.tired) {
+    return [];
+  }
+
+  const candidates = [
+    { row: selectedCreaturePosition.row - 1, col: selectedCreaturePosition.col },
+    { row: selectedCreaturePosition.row + 1, col: selectedCreaturePosition.col },
+    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col - 1 },
+    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col + 1 },
+  ];
+
+  return candidates.filter((position) => {
+    const inBoard =
+      position.row >= 0 &&
+      position.row <= 2 &&
+      position.col >= 0 &&
+      position.col <= 2;
+
+    const cell = inBoard ? getCell(position) : null;
+
+    return cell?.owner_index === 0;
+  });
+}
+
+function canDirectAttack() {
+  return (
+    selectedActionMode === 'attack' &&
+    selectedCreaturePosition &&
+    validAttackTargets().length === 0
+  );
+}
+
+function setBusy(value) {
+  busy = value;
+  renderControls();
 }
 
 function renderControls() {
   const canAct = isHumanTurn() && !busy;
+  const selectedCreature = findSelectedCreature();
+  const canUseCreatureActions =
+    canAct &&
+    selectedCreature &&
+    selectedCreature.owner_index === 1 &&
+    !selectedCreature.tired;
 
   const newMatchButton = byId('new-match-button');
   const endTurnButton = byId('end-turn-button');
   const refreshButton = byId('refresh-button');
-  const attackButton = byId('attack-button');
   const cancelButton = byId('cancel-selection-button');
-  const opponentTargetButton = byId('opponent-player-target');
-  const instructions = byId('selection-instructions');
+  const directAttackButton = byId('direct-attack-button');
+  const attackChoiceButton = byId('choose-attack-button');
+  const moveChoiceButton = byId('choose-move-button');
 
   if (newMatchButton) {
     newMatchButton.disabled = busy;
@@ -98,28 +238,91 @@ function renderControls() {
     refreshButton.disabled = !matchId || busy;
   }
 
-  if (attackButton) {
-    attackButton.disabled = !canAct || !selectedAttacker;
-  }
-
   if (cancelButton) {
     cancelButton.disabled =
       busy ||
-      (!selectedHandInstanceId && !selectedAttacker && !selectedTarget);
+      (!selectedHandInstanceId &&
+        !selectedCreaturePosition &&
+        !selectedActionMode &&
+        !selectedAttackTarget);
   }
 
-  if (opponentTargetButton) {
-    opponentTargetButton.disabled = !canAct || !selectedAttacker;
+  if (directAttackButton) {
+    directAttackButton.disabled = !canAct || !canDirectAttack();
   }
+
+  if (attackChoiceButton) {
+    attackChoiceButton.disabled = !canUseCreatureActions;
+  }
+
+  if (moveChoiceButton) {
+    const hasMana = (getHuman()?.current_mana ?? 0) >= 1;
+    const hasDestination = validMovePositionsForSelectedCreature().length > 0;
+
+    moveChoiceButton.disabled = !canUseCreatureActions || !hasMana || !hasDestination;
+  }
+
+  const instructions = byId('selection-instructions');
 
   if (instructions) {
     instructions.textContent = selectedModeText();
   }
+
+  renderCreatureActionPanel();
 }
 
-function setBusy(value) {
-  busy = value;
-  renderControls();
+function validMovePositionsForSelectedCreature() {
+  if (!selectedCreaturePosition) {
+    return [];
+  }
+
+  const creature = getCell(selectedCreaturePosition);
+
+  if (!creature || creature.owner_index !== 1 || creature.tired) {
+    return [];
+  }
+
+  const candidates = [
+    { row: selectedCreaturePosition.row - 1, col: selectedCreaturePosition.col },
+    { row: selectedCreaturePosition.row + 1, col: selectedCreaturePosition.col },
+    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col - 1 },
+    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col + 1 },
+  ];
+
+  return candidates.filter((position) => {
+    const inBoard =
+      position.row >= 0 &&
+      position.row <= 2 &&
+      position.col >= 0 &&
+      position.col <= 2;
+
+    return inBoard && !getCell(position);
+  });
+}
+
+function renderCreatureActionPanel() {
+  const panel = byId('creature-action-panel');
+  const name = byId('selected-creature-name');
+  const details = byId('selected-creature-details');
+
+  if (!panel || !name || !details) {
+    return;
+  }
+
+  const creature = findSelectedCreature();
+
+  if (!creature || creature.owner_index !== 1 || creature.tired || !isHumanTurn()) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  panel.classList.remove('hidden');
+
+  const card = cardCache.get(creature.card_id);
+  name.textContent = card?.name ?? 'Creatura selezionata';
+  details.textContent =
+    `ATK ${creature.attack} · HP ${creature.hp}/${creature.max_hp} · ` +
+    `Attacca gratis oppure Muovi pagando 1 mana.`;
 }
 
 async function api(path, options = {}) {
@@ -178,43 +381,6 @@ async function getCard(cardId) {
   return card;
 }
 
-function findHandInstance(instanceId) {
-  const player = getHuman();
-
-  if (!player) {
-    return null;
-  }
-
-  return (
-    player.hand.find(
-      (instance) => instance.instance_id === instanceId,
-    ) ?? null
-  );
-}
-
-function getCreatureAt(ownerIndex, row, col) {
-  const player = ownerIndex === 1 ? getHuman() : getAi();
-
-  return player?.board?.rows?.[row]?.[col] ?? null;
-}
-
-function isSelectedAttacker(ownerIndex, row, col) {
-  return (
-    ownerIndex === 1 &&
-    selectedAttacker?.row === row &&
-    selectedAttacker?.col === col
-  );
-}
-
-function isSelectedTarget(ownerIndex, row, col) {
-  return (
-    selectedTarget?.type === 'creature' &&
-    selectedTarget?.ownerIndex === ownerIndex &&
-    selectedTarget?.position?.row === row &&
-    selectedTarget?.position?.col === col
-  );
-}
-
 function renderStatus() {
   const matchStatus = byId('match-status');
   const turnStatus = byId('turn-status');
@@ -232,7 +398,7 @@ function renderStatus() {
   }
 
   const activeLabel =
-    gameState.active_player_index === 1 ? 'Giocatore' : 'IA';
+    gameState.active_player_index === 1 ? 'Il tuo turno' : 'Turno IA';
 
   matchStatus.textContent =
     gameState.status === 'finished' ? 'Terminata' : 'In corso';
@@ -270,82 +436,121 @@ function renderPlayerSummary() {
   }
 }
 
-async function renderFieldSpell(player, elementId) {
-  const container = byId(elementId);
+async function renderFieldSpell(player, elementId, ownerLabel) {
+  const element = byId(elementId);
 
-  if (!container) {
+  if (!element) {
     return;
   }
 
-  const fieldSpell = player?.board?.field_spell;
-
-  if (!fieldSpell) {
-    container.textContent = 'Nessuna Terraforma';
+  if (!player?.field_spell) {
+    element.textContent = `${ownerLabel}: Nessuna Terraforma`;
     return;
   }
 
   try {
-    const card = await getCard(fieldSpell.card_id);
-    container.textContent = `Terraforma: ${card.name}`;
+    const card = await getCard(player.field_spell.card_id);
+    element.textContent = `${ownerLabel}: ${card.name}`;
   } catch {
-    container.textContent = 'Terraforma attiva';
+    element.textContent = `${ownerLabel}: Terraforma attiva`;
   }
 }
 
-function boardCellElement({ ownerIndex, row, col, cell, card }) {
-  const element = document.createElement('button');
+function positionClass(row) {
+  if (row === 0) {
+    return 'ai-row';
+  }
 
-  element.type = 'button';
-  element.className = 'board-cell';
-  element.dataset.owner = String(ownerIndex);
-  element.dataset.row = String(row);
-  element.dataset.col = String(col);
+  if (row === 1) {
+    return 'center-row';
+  }
+
+  return 'human-row';
+}
+
+function isValidMoveCell(position) {
+  return validMovePositions().some((candidate) =>
+    positionsEqual(candidate, position),
+  );
+}
+
+function isValidTargetCell(position) {
+  return validAttackTargets().some((candidate) =>
+    positionsEqual(candidate, position),
+  );
+}
+
+function boardCellElement(position, cell, card) {
+  const button = document.createElement('button');
+
+  button.type = 'button';
+  button.className = 'board-cell';
+  button.dataset.row = String(position.row);
+  button.dataset.col = String(position.col);
+
+  const selectedCreature = positionsEqual(position, selectedCreaturePosition);
+  const selectedTarget = positionsEqual(position, selectedAttackTarget);
 
   if (!cell) {
-    element.classList.add('empty');
-    element.innerHTML = '<span class="empty-label">Cella vuota</span>';
+    button.classList.add('empty');
 
-    element.addEventListener('click', () => {
-      onBoardCellClick(ownerIndex, row, col).catch(showUnexpectedError);
+    if (isValidMoveCell(position)) {
+      button.classList.add('valid-move');
+    }
+
+    button.innerHTML = `
+      <span class="empty-label">Cella libera</span>
+      <span class="cell-coordinate">[${position.row},${position.col}]</span>
+    `;
+
+    button.addEventListener('click', () => {
+      onBoardCellClick(position).catch(showUnexpectedError);
     });
 
-    return element;
+    return button;
   }
 
-  element.classList.add(ownerIndex === 1 ? 'human-card' : 'ai-card');
+  button.classList.add(cell.owner_index === 1 ? 'human-card' : 'ai-card');
 
   if (cell.tired) {
-    element.classList.add('tired');
+    button.classList.add('tired');
   }
 
-  if (isSelectedAttacker(ownerIndex, row, col)) {
-    element.classList.add('selected-attacker');
+  if (selectedCreature) {
+    button.classList.add('selected-creature');
   }
 
-  if (isSelectedTarget(ownerIndex, row, col)) {
-    element.classList.add('selected-target');
+  if (isValidTargetCell(position)) {
+    button.classList.add('valid-target');
   }
 
+  if (selectedTarget) {
+    button.classList.add('selected-target');
+  }
+
+  const ownerName = cell.owner_index === 1 ? 'Tua creatura' : 'Creatura IA';
   const auraCount = cell.auras?.length ?? 0;
 
-  element.innerHTML = `
+  button.innerHTML = `
+    <span class="cell-coordinate">[${position.row},${position.col}]</span>
     <span class="card-cost">${escapeHtml(card?.mana_cost ?? '')}</span>
     <span class="card-type">${escapeHtml(card?.card_type ?? 'creatura')}</span>
-    <strong class="card-name">${escapeHtml(card?.name ?? 'Creatura')}</strong>
+    <strong class="card-name">${escapeHtml(card?.name ?? 'Creatura sconosciuta')}</strong>
     <span class="card-effect">${escapeHtml(card?.effect_text ?? '')}</span>
-    <span class="card-stats">${escapeHtml(`${cell.attack} / ${cell.hp}`)}</span>
+    <span class="card-owner">${ownerName}${cell.tired ? ' · Stanca' : ' · Pronta'}</span>
+    <span class="card-stats">${cell.attack} / ${cell.hp}</span>
     ${auraCount > 0 ? `<span class="card-aura">Aura: ${auraCount}</span>` : ''}
   `;
 
-  element.addEventListener('click', () => {
-    onBoardCellClick(ownerIndex, row, col).catch(showUnexpectedError);
+  button.addEventListener('click', () => {
+    onBoardCellClick(position).catch(showUnexpectedError);
   });
 
-  return element;
+  return button;
 }
 
-async function renderBoard(player, ownerIndex, containerId) {
-  const container = byId(containerId);
+async function renderBoard() {
+  const container = byId('shared-board');
 
   if (!container) {
     return;
@@ -353,12 +558,19 @@ async function renderBoard(player, ownerIndex, containerId) {
 
   container.innerHTML = '';
 
+  const board = getBoard();
+
+  if (!board) {
+    return;
+  }
+
   for (let row = 0; row < 3; row += 1) {
     const rowElement = document.createElement('div');
-    rowElement.className = 'board-row';
+    rowElement.className = `board-row ${positionClass(row)}`;
 
     for (let col = 0; col < 3; col += 1) {
-      const cell = player?.board?.rows?.[row]?.[col] ?? null;
+      const position = { row, col };
+      const cell = board[row][col];
       let card = null;
 
       if (cell?.card_id) {
@@ -369,15 +581,7 @@ async function renderBoard(player, ownerIndex, containerId) {
         }
       }
 
-      rowElement.appendChild(
-        boardCellElement({
-          ownerIndex,
-          row,
-          col,
-          cell,
-          card,
-        }),
-      );
+      rowElement.appendChild(boardCellElement(position, cell, card));
     }
 
     container.appendChild(rowElement);
@@ -385,13 +589,13 @@ async function renderBoard(player, ownerIndex, containerId) {
 }
 
 function handCardElement(instance, card) {
-  const element = document.createElement('button');
+  const button = document.createElement('button');
 
-  element.type = 'button';
-  element.className = 'hand-card';
+  button.type = 'button';
+  button.className = 'hand-card';
 
   if (selectedHandInstanceId === instance.instance_id) {
-    element.classList.add('selected-hand-card');
+    button.classList.add('selected-hand-card');
   }
 
   const stats =
@@ -402,21 +606,19 @@ function handCardElement(instance, card) {
       ? `${card.attack} / ${card.hp}`
       : card.rarity ?? '';
 
-  element.innerHTML = `
+  button.innerHTML = `
     <span class="card-cost">${escapeHtml(card.mana_cost)}</span>
     <span class="card-type">${escapeHtml(card.card_type)}</span>
     <strong class="card-name">${escapeHtml(card.name)}</strong>
-    <span class="card-effect">${escapeHtml(
-      card.effect_text ?? 'Nessun effetto.',
-    )}</span>
+    <span class="card-effect">${escapeHtml(card.effect_text ?? 'Nessun effetto.')}</span>
     <span class="card-stats">${escapeHtml(stats)}</span>
   `;
 
-  element.addEventListener('click', () => {
+  button.addEventListener('click', () => {
     onHandCardClick(instance.instance_id).catch(showUnexpectedError);
   });
 
-  return element;
+  return button;
 }
 
 async function renderHand() {
@@ -454,34 +656,12 @@ async function render() {
   renderStatus();
   renderPlayerSummary();
 
-  const player = getHuman();
-  const opponent = getAi();
-
-  if (player && opponent) {
-    await Promise.all([
-      renderFieldSpell(opponent, 'opponent-field-spell'),
-      renderFieldSpell(player, 'player-field-spell'),
-      renderBoard(opponent, 0, 'opponent-board'),
-      renderBoard(player, 1, 'player-board'),
-      renderHand(),
-    ]);
-  } else {
-    const opponentBoard = byId('opponent-board');
-    const playerBoard = byId('player-board');
-    const hand = byId('player-hand');
-
-    if (opponentBoard) {
-      opponentBoard.innerHTML = '';
-    }
-
-    if (playerBoard) {
-      playerBoard.innerHTML = '';
-    }
-
-    if (hand) {
-      hand.innerHTML = '';
-    }
-  }
+  await Promise.all([
+    renderFieldSpell(getAi(), 'opponent-field-spell', 'IA'),
+    renderFieldSpell(getHuman(), 'player-field-spell', 'Tu'),
+    renderBoard(),
+    renderHand(),
+  ]);
 
   renderControls();
 }
@@ -507,7 +687,7 @@ async function refreshLogs() {
     return;
   }
 
-  const { logs } = await api(`/match/${matchId}/logs?limit=50`);
+  const { logs } = await api(`/match/${matchId}/logs?limit=100`);
   list.innerHTML = '';
 
   for (const item of logs) {
@@ -521,6 +701,8 @@ async function refreshLogs() {
 
     list.appendChild(line);
   }
+
+  list.scrollTop = list.scrollHeight;
 }
 
 async function refreshAll() {
@@ -537,7 +719,7 @@ async function createMatch() {
   setBusy(true);
   clearSelection();
   cardCache = new Map();
-  setGameMessage('Creazione della partita in corso…');
+  setGameMessage('Creazione della partita tattica in corso…');
 
   try {
     const payload = await api('/match/create', {
@@ -572,110 +754,191 @@ async function onHandCardClick(instanceId) {
   selectedHandInstanceId =
     selectedHandInstanceId === instanceId ? null : instanceId;
 
-  selectedAttacker = null;
-  selectedTarget = null;
+  selectedCreaturePosition = null;
+  selectedActionMode = null;
+  selectedAttackTarget = null;
 
   await render();
 }
 
-async function onBoardCellClick(ownerIndex, row, col) {
+async function onBoardCellClick(position) {
   if (!isHumanTurn() || busy) {
     return;
   }
 
-  const cell = getCreatureAt(ownerIndex, row, col);
+  const cell = getCell(position);
 
   if (selectedHandInstanceId) {
-    const instance = findHandInstance(selectedHandInstanceId);
-
-    if (!instance) {
-      clearSelection();
-      await render();
-      return;
-    }
-
-    const card = await getCard(instance.card_id);
-
-    if (
-      card.card_type === 'monster' ||
-      card.card_type === 'mostrissimo'
-    ) {
-      if (ownerIndex !== 1 || cell) {
-        setGameMessage(
-          'Le creature devono essere giocate in una cella libera del tuo campo.',
-          'error',
-        );
-        return;
-      }
-
-      await performPlayCard(instance.instance_id, {
-        position: { row, col },
-      });
-
-      return;
-    }
-
-    if (card.card_type === 'aura') {
-      if (!cell) {
-        setGameMessage(
-          'Un’Aura richiede una creatura bersaglio.',
-          'error',
-        );
-        return;
-      }
-
-      await performPlayCard(instance.instance_id, {
-        targetInstanceId: cell.instance_id,
-      });
-
-      return;
-    }
-
-    const needsCreatureTarget =
-      card.effect_json?.target === 'any_creature' ||
-      card.effect_json?.type === 'return_hand';
-
-    if (needsCreatureTarget) {
-      if (!cell) {
-        setGameMessage(
-          'Questa carta richiede una creatura bersaglio.',
-          'error',
-        );
-        return;
-      }
-
-      await performPlayCard(instance.instance_id, {
-        targetInstanceId: cell.instance_id,
-      });
-
-      return;
-    }
-
-    await performPlayCard(instance.instance_id, {});
+    await handleCardPlacementOrTarget(position, cell);
     return;
   }
 
-  if (ownerIndex === 1 && cell && !cell.tired) {
-    const alreadySelected =
-      selectedAttacker?.row === row &&
-      selectedAttacker?.col === col;
+  if (selectedActionMode === 'move') {
+    if (!isValidMoveCell(position)) {
+      setGameMessage('Scegli una cella libera ortogonalmente adiacente.', 'error');
+      return;
+    }
 
-    selectedAttacker = alreadySelected ? null : { row, col };
-    selectedTarget = null;
+    await performMove(selectedCreaturePosition, position);
+    return;
+  }
 
+  if (selectedActionMode === 'attack') {
+    if (cell?.owner_index === 0 && isValidTargetCell(position)) {
+      selectedAttackTarget = position;
+      await performAttack({
+        type: 'creature',
+        position,
+      });
+      return;
+    }
+
+    setGameMessage('Scegli una creatura IA ortogonalmente adiacente.', 'error');
+    return;
+  }
+
+  if (cell?.owner_index === 1) {
+    if (cell.tired) {
+      setGameMessage('Questa creatura è stanca: non può attaccare né muoversi.', 'error');
+      return;
+    }
+
+    selectedCreaturePosition = position;
+    selectedHandInstanceId = null;
+    selectedActionMode = null;
+    selectedAttackTarget = null;
+
+    await preloadSelectedCard(cell.card_id);
     await render();
     return;
   }
 
-  if (ownerIndex === 0 && cell && selectedAttacker) {
-    selectedTarget = {
-      type: 'creature',
-      ownerIndex: 0,
-      position: { row, col },
-    };
-
-    await render();
+  if (cell?.owner_index === 0) {
+    setGameMessage('Seleziona prima una tua creatura pronta.', 'error');
   }
+}
+
+async function preloadSelectedCard(cardId) {
+  try {
+    await getCard(cardId);
+  } catch {
+    return;
+  }
+}
+
+async function handleCardPlacementOrTarget(position, cell) {
+  const instance = findHandInstance(selectedHandInstanceId);
+
+  if (!instance) {
+    clearSelection();
+    await render();
+    return;
+  }
+
+  const card = await getCard(instance.card_id);
+
+  if (card.card_type === 'monster' || card.card_type === 'mostrissimo') {
+    if (position.row !== 2 || cell) {
+      setGameMessage(
+        'Puoi evocare creature solo in una cella libera della tua riga inferiore.',
+        'error',
+      );
+      return;
+    }
+
+    await performPlayCard(instance.instance_id, {
+      position,
+    });
+
+    return;
+  }
+
+  if (card.card_type === 'aura') {
+    if (!cell) {
+      setGameMessage('Un’Aura richiede una creatura bersaglio.', 'error');
+      return;
+    }
+
+    await performPlayCard(instance.instance_id, {
+      targetInstanceId: cell.instance_id,
+    });
+
+    return;
+  }
+
+  const needsCreatureTarget =
+    card.effect_json?.target === 'any_creature' ||
+    card.effect_json?.type === 'return_hand';
+
+  if (needsCreatureTarget) {
+    if (!cell) {
+      setGameMessage(
+        'Questa carta richiede una creatura bersaglio.',
+        'error',
+      );
+      return;
+    }
+
+    await performPlayCard(instance.instance_id, {
+      targetInstanceId: cell.instance_id,
+    });
+
+    return;
+  }
+
+  await performPlayCard(instance.instance_id, {});
+}
+
+async function chooseAttack() {
+  const creature = findSelectedCreature();
+
+  if (!creature || creature.owner_index !== 1 || creature.tired) {
+    return;
+  }
+
+  selectedActionMode = 'attack';
+  selectedAttackTarget = null;
+  selectedHandInstanceId = null;
+
+  await render();
+
+  if (canDirectAttack()) {
+    setGameMessage(
+      'Nessun nemico IA è adiacente: puoi attaccare direttamente l’IA.',
+      'success',
+    );
+  } else {
+    setGameMessage(
+      'Seleziona una creatura IA ortogonalmente adiacente.',
+      'success',
+    );
+  }
+}
+
+async function chooseMove() {
+  const creature = findSelectedCreature();
+  const player = getHuman();
+
+  if (!creature || creature.owner_index !== 1 || creature.tired) {
+    return;
+  }
+
+  if ((player?.current_mana ?? 0) < 1) {
+    setGameMessage('Servono 1 mana per muovere una creatura.', 'error');
+    return;
+  }
+
+  if (validMovePositionsForSelectedCreature().length === 0) {
+    setGameMessage('Non esistono celle libere ortogonalmente adiacenti.', 'error');
+    return;
+  }
+
+  selectedActionMode = 'move';
+  selectedAttackTarget = null;
+  selectedHandInstanceId = null;
+
+  await render();
+  setGameMessage('Scegli una cella libera adiacente per muovere la creatura.', 'success');
 }
 
 async function performPlayCard(instanceId, options) {
@@ -714,21 +977,47 @@ async function performPlayCard(instanceId, options) {
   }
 }
 
-async function confirmAttack() {
+async function performMove(from, to) {
   if (!matchId) {
     setGameMessage('Crea prima una nuova partita.', 'error');
     return;
   }
 
-  if (!selectedAttacker) {
+  setBusy(true);
+
+  try {
+    const { state } = await api(`/match/${matchId}/move`, {
+      method: 'POST',
+      body: {
+        from,
+        to,
+      },
+    });
+
+    gameState = state;
+    clearSelection();
+
+    await refreshLogs();
+    await render();
+
+    setGameMessage('Creatura mossa: 1 mana speso e creatura stanca.', 'success');
+  } catch (error) {
+    setGameMessage(
+      error instanceof Error
+        ? error.message
+        : 'Impossibile muovere la creatura.',
+      'error',
+    );
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function performAttack(target) {
+  if (!matchId || !selectedCreaturePosition) {
     setGameMessage('Seleziona prima una creatura attaccante.', 'error');
     return;
   }
-
-  const target = selectedTarget ?? {
-    type: 'player',
-    playerIndex: 0,
-  };
 
   setBusy(true);
 
@@ -736,7 +1025,7 @@ async function confirmAttack() {
     const { state } = await api(`/match/${matchId}/attack`, {
       method: 'POST',
       body: {
-        attackerPosition: selectedAttacker,
+        attackerPosition: selectedCreaturePosition,
         target,
       },
     });
@@ -747,7 +1036,7 @@ async function confirmAttack() {
     await refreshLogs();
     await render();
 
-    setGameMessage('Attacco risolto.', 'success');
+    setGameMessage('Attacco risolto. La creatura ora è stanca.', 'success');
   } catch (error) {
     setGameMessage(
       error instanceof Error
@@ -760,13 +1049,28 @@ async function confirmAttack() {
   }
 }
 
+async function performDirectAttack() {
+  if (!canDirectAttack()) {
+    setGameMessage(
+      'L’attacco diretto è disponibile solo se nessun nemico IA è ortogonalmente adiacente.',
+      'error',
+    );
+    return;
+  }
+
+  await performAttack({
+    type: 'player',
+    playerIndex: 0,
+  });
+}
+
 async function endHumanTurn() {
   if (!matchId || busy) {
     return;
   }
 
   setBusy(true);
-  setGameMessage('L’IA sta valutando la plancia…');
+  setGameMessage('L’IA sta valutando la scacchiera…');
 
   try {
     const { state } = await api(`/match/${matchId}/end-turn`, {
@@ -796,19 +1100,6 @@ async function endHumanTurn() {
   } finally {
     setBusy(false);
   }
-}
-
-async function selectOpponentPlayerTarget() {
-  if (!selectedAttacker || !isHumanTurn() || busy) {
-    return;
-  }
-
-  selectedTarget = {
-    type: 'player',
-    playerIndex: 0,
-  };
-
-  await render();
 }
 
 async function handleRefresh() {
@@ -891,12 +1182,21 @@ async function initializeGame() {
     createMatch().catch(showUnexpectedError);
   });
 
-  byId('end-turn-button')?.addEventListener('click', () => {
-    endHumanTurn().catch(showUnexpectedError);
+  byId('choose-attack-button')?.addEventListener('click', () => {
+    chooseAttack().catch(showUnexpectedError);
   });
 
-  byId('attack-button')?.addEventListener('click', () => {
-    confirmAttack().catch(showUnexpectedError);
+  byId('choose-move-button')?.addEventListener('click', () => {
+    chooseMove().catch(showUnexpectedError);
+  });
+
+  byId('cancel-creature-action-button')?.addEventListener('click', () => {
+    clearSelection();
+    render().catch(showUnexpectedError);
+  });
+
+  byId('direct-attack-button')?.addEventListener('click', () => {
+    performDirectAttack().catch(showUnexpectedError);
   });
 
   byId('cancel-selection-button')?.addEventListener('click', () => {
@@ -904,8 +1204,8 @@ async function initializeGame() {
     render().catch(showUnexpectedError);
   });
 
-  byId('opponent-player-target')?.addEventListener('click', () => {
-    selectOpponentPlayerTarget().catch(showUnexpectedError);
+  byId('end-turn-button')?.addEventListener('click', () => {
+    endHumanTurn().catch(showUnexpectedError);
   });
 
   byId('refresh-button')?.addEventListener('click', () => {
