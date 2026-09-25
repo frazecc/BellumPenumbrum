@@ -32,11 +32,6 @@ function setGameMessage(message = '', kind = '') {
   element.className = `game-message ${kind}`.trim();
 }
 
-function setBusy(value) {
-  busy = value;
-  renderControls();
-}
-
 function escapeHtml(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -80,6 +75,53 @@ function selectedModeText() {
   return 'Seleziona una carta dalla mano oppure una tua creatura per attaccare.';
 }
 
+function renderControls() {
+  const canAct = isHumanTurn() && !busy;
+
+  const newMatchButton = byId('new-match-button');
+  const endTurnButton = byId('end-turn-button');
+  const refreshButton = byId('refresh-button');
+  const attackButton = byId('attack-button');
+  const cancelButton = byId('cancel-selection-button');
+  const opponentTargetButton = byId('opponent-player-target');
+  const instructions = byId('selection-instructions');
+
+  if (newMatchButton) {
+    newMatchButton.disabled = busy;
+  }
+
+  if (endTurnButton) {
+    endTurnButton.disabled = !canAct;
+  }
+
+  if (refreshButton) {
+    refreshButton.disabled = !matchId || busy;
+  }
+
+  if (attackButton) {
+    attackButton.disabled = !canAct || !selectedAttacker;
+  }
+
+  if (cancelButton) {
+    cancelButton.disabled =
+      busy ||
+      (!selectedHandInstanceId && !selectedAttacker && !selectedTarget);
+  }
+
+  if (opponentTargetButton) {
+    opponentTargetButton.disabled = !canAct || !selectedAttacker;
+  }
+
+  if (instructions) {
+    instructions.textContent = selectedModeText();
+  }
+}
+
+function setBusy(value) {
+  busy = value;
+  renderControls();
+}
+
 async function api(path, options = {}) {
   const token = await getAccessToken();
 
@@ -88,7 +130,7 @@ async function api(path, options = {}) {
   }
 
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => {
+  const timeoutId = window.setTimeout(() => {
     controller.abort();
   }, REQUEST_TIMEOUT_MS);
 
@@ -113,15 +155,15 @@ async function api(path, options = {}) {
 
     return payload;
   } catch (error) {
-    if (error?.name === 'AbortError') {
+    if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error(
-        'Il server Render non ha risposto entro 45 secondi. Riprova: il servizio Free potrebbe essersi appena riattivato.',
+        'Il server Render non ha risposto entro 45 secondi. Riprova: il servizio potrebbe essersi appena riattivato.',
       );
     }
 
     throw error;
   } finally {
-    window.clearTimeout(timeout);
+    window.clearTimeout(timeoutId);
   }
 }
 
@@ -137,9 +179,17 @@ async function getCard(cardId) {
 }
 
 function findHandInstance(instanceId) {
-  return getHuman()?.hand?.find(
-    (instance) => instance.instance_id === instanceId,
-  ) ?? null;
+  const player = getHuman();
+
+  if (!player) {
+    return null;
+  }
+
+  return (
+    player.hand.find(
+      (instance) => instance.instance_id === instanceId,
+    ) ?? null
+  );
 }
 
 function getCreatureAt(ownerIndex, row, col) {
@@ -165,88 +215,6 @@ function isSelectedTarget(ownerIndex, row, col) {
   );
 }
 
-async function createMatch() {
-  if (busy) {
-    return;
-  }
-
-  setBusy(true);
-  clearSelection();
-  cardCache = new Map();
-  setGameMessage('Creazione della partita in corso…');
-
-  try {
-    const payload = await api('/match/create', {
-      method: 'POST',
-      body: {},
-    });
-
-    matchId = payload.match_id;
-    gameState = payload.state;
-
-    await refreshLogs();
-    await render();
-
-    setGameMessage('Partita pronta. È il tuo turno.', 'success');
-  } catch (error) {
-    setGameMessage(
-      error instanceof Error
-        ? error.message
-        : 'Impossibile creare la partita.',
-      'error',
-    );
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function refreshState() {
-  if (!matchId) {
-    return;
-  }
-
-  const { state } = await api(`/match/${matchId}`);
-  gameState = state;
-}
-
-async function refreshLogs() {
-  const list = byId('match-logs');
-
-  if (!list) {
-    return;
-  }
-
-  if (!matchId) {
-    list.innerHTML = '';
-    return;
-  }
-
-  const { logs } = await api(`/match/${matchId}/logs?limit=50`);
-  list.innerHTML = '';
-
-  for (const item of logs) {
-    const entry = item.log_data ?? {};
-    const line = document.createElement('li');
-
-    line.textContent =
-      entry.description ??
-      entry.action_type ??
-      'Evento di partita';
-
-    list.appendChild(line);
-  }
-}
-
-async function refreshAll() {
-  if (!matchId) {
-    return;
-  }
-
-  await refreshState();
-  await refreshLogs();
-  await render();
-}
-
 function renderStatus() {
   const matchStatus = byId('match-status');
   const turnStatus = byId('turn-status');
@@ -263,19 +231,13 @@ function renderStatus() {
     return;
   }
 
-  const activePlayer =
-    gameState.active_player_index === 1
-      ? 'Giocatore'
-      : 'IA';
+  const activeLabel =
+    gameState.active_player_index === 1 ? 'Giocatore' : 'IA';
 
   matchStatus.textContent =
-    gameState.status === 'finished'
-      ? 'Terminata'
-      : 'In corso';
+    gameState.status === 'finished' ? 'Terminata' : 'In corso';
 
-  turnStatus.textContent =
-    `${gameState.current_turn} · ${activePlayer}`;
-
+  turnStatus.textContent = `${gameState.current_turn} · ${activeLabel}`;
   phaseStatus.textContent = gameState.phase;
 }
 
@@ -287,19 +249,25 @@ function renderPlayerSummary() {
     return;
   }
 
-  byId('player-life').textContent = String(player.life);
-  byId('player-mana').textContent =
-    `${player.current_mana} / ${player.max_mana}`;
-  byId('player-hand-count').textContent = String(player.hand.length);
-  byId('player-deck-count').textContent = String(player.deck.length);
-  byId('player-graveyard-count').textContent = String(player.graveyard.length);
+  const values = {
+    'player-life': player.life,
+    'player-mana': `${player.current_mana} / ${player.max_mana}`,
+    'player-hand-count': player.hand.length,
+    'player-deck-count': player.deck.length,
+    'player-graveyard-count': player.graveyard.length,
+    'opponent-life': opponent.life,
+    'opponent-hand-count': opponent.hand.length,
+    'opponent-deck-count': opponent.deck.length,
+    'opponent-graveyard-count': opponent.graveyard.length,
+  };
 
-  byId('opponent-life').textContent = String(opponent.life);
-  byId('opponent-hand-count').textContent = String(opponent.hand.length);
-  byId('opponent-deck-count').textContent = String(opponent.deck.length);
-  byId('opponent-graveyard-count').textContent = String(
-    opponent.graveyard.length,
-  );
+  for (const [id, value] of Object.entries(values)) {
+    const element = byId(id);
+
+    if (element) {
+      element.textContent = String(value);
+    }
+  }
 }
 
 async function renderFieldSpell(player, elementId) {
@@ -359,16 +327,13 @@ function boardCellElement({ ownerIndex, row, col, cell, card }) {
   }
 
   const auraCount = cell.auras?.length ?? 0;
-  const cardType = card?.card_type ?? 'creatura';
-  const cardName = card?.name ?? 'Creatura sconosciuta';
-  const effectText = card?.effect_text ?? '';
 
   element.innerHTML = `
     <span class="card-cost">${escapeHtml(card?.mana_cost ?? '')}</span>
-    <span class="card-type">${escapeHtml(cardType)}</span>
-    <strong class="card-name">${escapeHtml(cardName)}</strong>
-    <span class="card-effect">${escapeHtml(effectText)}</span>
-    <span class="card-stats">${cell.attack} / ${cell.hp}</span>
+    <span class="card-type">${escapeHtml(card?.card_type ?? 'creatura')}</span>
+    <strong class="card-name">${escapeHtml(card?.name ?? 'Creatura')}</strong>
+    <span class="card-effect">${escapeHtml(card?.effect_text ?? '')}</span>
+    <span class="card-stats">${escapeHtml(`${cell.attack} / ${cell.hp}`)}</span>
     ${auraCount > 0 ? `<span class="card-aura">Aura: ${auraCount}</span>` : ''}
   `;
 
@@ -430,8 +395,10 @@ function handCardElement(instance, card) {
   }
 
   const stats =
-    card.attack !== null && card.attack !== undefined &&
-    card.hp !== null && card.hp !== undefined
+    card.attack !== null &&
+    card.attack !== undefined &&
+    card.hp !== null &&
+    card.hp !== undefined
       ? `${card.attack} / ${card.hp}`
       : card.rarity ?? '';
 
@@ -475,52 +442,11 @@ async function renderHand() {
 
       fallback.type = 'button';
       fallback.className = 'hand-card';
+      fallback.disabled = true;
       fallback.textContent = 'Carta non caricabile';
 
       container.appendChild(fallback);
     }
-  }
-}
-
-function renderControls() {
-  const canAct = isHumanTurn() && !busy;
-
-  const newMatchButton = byId('new-match-button');
-  const endTurnButton = byId('end-turn-button');
-  const refreshButton = byId('refresh-button');
-  const attackButton = byId('attack-button');
-  const cancelButton = byId('cancel-selection-button');
-  const opponentTarget = byId('opponent-player-target');
-  const instructions = byId('selection-instructions');
-
-  if (newMatchButton) {
-    newMatchButton.disabled = busy;
-  }
-
-  if (endTurnButton) {
-    endTurnButton.disabled = !canAct;
-  }
-
-  if (refreshButton) {
-    refreshButton.disabled = !matchId || busy;
-  }
-
-  if (attackButton) {
-    attackButton.disabled = !canAct || !selectedAttacker;
-  }
-
-  if (cancelButton) {
-    cancelButton.disabled =
-      busy ||
-      (!selectedHandInstanceId && !selectedAttacker && !selectedTarget);
-  }
-
-  if (opponentTarget) {
-    opponentTarget.disabled = !canAct || !selectedAttacker;
-  }
-
-  if (instructions) {
-    instructions.textContent = selectedModeText();
   }
 }
 
@@ -542,14 +468,100 @@ async function render() {
   } else {
     const opponentBoard = byId('opponent-board');
     const playerBoard = byId('player-board');
-    const playerHand = byId('player-hand');
+    const hand = byId('player-hand');
 
-    if (opponentBoard) opponentBoard.innerHTML = '';
-    if (playerBoard) playerBoard.innerHTML = '';
-    if (playerHand) playerHand.innerHTML = '';
+    if (opponentBoard) {
+      opponentBoard.innerHTML = '';
+    }
+
+    if (playerBoard) {
+      playerBoard.innerHTML = '';
+    }
+
+    if (hand) {
+      hand.innerHTML = '';
+    }
   }
 
   renderControls();
+}
+
+async function refreshState() {
+  if (!matchId) {
+    return;
+  }
+
+  const { state } = await api(`/match/${matchId}`);
+  gameState = state;
+}
+
+async function refreshLogs() {
+  const list = byId('match-logs');
+
+  if (!list) {
+    return;
+  }
+
+  if (!matchId) {
+    list.innerHTML = '';
+    return;
+  }
+
+  const { logs } = await api(`/match/${matchId}/logs?limit=50`);
+  list.innerHTML = '';
+
+  for (const item of logs) {
+    const entry = item.log_data ?? {};
+    const line = document.createElement('li');
+
+    line.textContent =
+      entry.description ??
+      entry.action_type ??
+      'Evento partita';
+
+    list.appendChild(line);
+  }
+}
+
+async function refreshAll() {
+  await refreshState();
+  await refreshLogs();
+  await render();
+}
+
+async function createMatch() {
+  if (busy) {
+    return;
+  }
+
+  setBusy(true);
+  clearSelection();
+  cardCache = new Map();
+  setGameMessage('Creazione della partita in corso…');
+
+  try {
+    const payload = await api('/match/create', {
+      method: 'POST',
+      body: {},
+    });
+
+    matchId = payload.match_id;
+    gameState = payload.state;
+
+    await refreshLogs();
+    await render();
+
+    setGameMessage('Partita pronta. È il tuo turno.', 'success');
+  } catch (error) {
+    setGameMessage(
+      error instanceof Error
+        ? error.message
+        : 'Impossibile creare la partita.',
+      'error',
+    );
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function onHandCardClick(instanceId) {
@@ -558,9 +570,7 @@ async function onHandCardClick(instanceId) {
   }
 
   selectedHandInstanceId =
-    selectedHandInstanceId === instanceId
-      ? null
-      : instanceId;
+    selectedHandInstanceId === instanceId ? null : instanceId;
 
   selectedAttacker = null;
   selectedTarget = null;
@@ -645,19 +655,12 @@ async function onBoardCellClick(ownerIndex, row, col) {
     return;
   }
 
-  if (
-    ownerIndex === 1 &&
-    cell &&
-    !cell.tired
-  ) {
+  if (ownerIndex === 1 && cell && !cell.tired) {
     const alreadySelected =
       selectedAttacker?.row === row &&
       selectedAttacker?.col === col;
 
-    selectedAttacker = alreadySelected
-      ? null
-      : { row, col };
-
+    selectedAttacker = alreadySelected ? null : { row, col };
     selectedTarget = null;
 
     await render();
@@ -808,6 +811,28 @@ async function selectOpponentPlayerTarget() {
   await render();
 }
 
+async function handleRefresh() {
+  if (!matchId || busy) {
+    return;
+  }
+
+  setBusy(true);
+
+  try {
+    await refreshAll();
+    setGameMessage('Stato aggiornato.', 'success');
+  } catch (error) {
+    setGameMessage(
+      error instanceof Error
+        ? error.message
+        : 'Impossibile aggiornare lo stato.',
+      'error',
+    );
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function handleLogout() {
   try {
     await signOut();
@@ -851,7 +876,6 @@ async function initializeGame() {
   initialized = true;
 
   const username = usernameFromEmail(user.email ?? 'Giocatore');
-
   const signedInUser = byId('signed-in-user');
   const playerTitle = byId('player-title');
 
@@ -879,3 +903,32 @@ async function initializeGame() {
     clearSelection();
     render().catch(showUnexpectedError);
   });
+
+  byId('opponent-player-target')?.addEventListener('click', () => {
+    selectOpponentPlayerTarget().catch(showUnexpectedError);
+  });
+
+  byId('refresh-button')?.addEventListener('click', () => {
+    handleRefresh().catch(showUnexpectedError);
+  });
+
+  byId('logout-button')?.addEventListener('click', () => {
+    handleLogout().catch(showUnexpectedError);
+  });
+
+  await render();
+}
+
+window.addEventListener('bellum:auth-ready', () => {
+  initializeGame().catch(showUnexpectedError);
+});
+
+getCurrentUser()
+  .then((user) => {
+    if (user) {
+      return initializeGame();
+    }
+
+    return undefined;
+  })
+  .catch(showUnexpectedError);
