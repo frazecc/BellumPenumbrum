@@ -18,6 +18,12 @@ let cardCache = new Map();
 let busy = false;
 let initialized = false;
 
+const EMPTY_BOARD = [
+  [null, null, null],
+  [null, null, null],
+  [null, null, null],
+];
+
 function byId(id) {
   return document.getElementById(id);
 }
@@ -51,7 +57,7 @@ function getAi() {
 }
 
 function getBoard() {
-  return gameState?.board?.rows ?? null;
+  return gameState?.board?.rows ?? EMPTY_BOARD;
 }
 
 function isHumanTurn() {
@@ -110,34 +116,8 @@ function clearSelection() {
   selectedAttackTarget = null;
 }
 
-function selectedModeText() {
-  if (selectedHandInstanceId) {
-    return 'Carta selezionata: scegli una cella della tua riga o una creatura bersaglio.';
-  }
-
-  if (selectedActionMode === 'move') {
-    return 'Movimento: scegli una cella libera ortogonalmente adiacente. Costa 1 mana e stanca la creatura.';
-  }
-
-  if (selectedActionMode === 'attack') {
-    const targets = validAttackTargets();
-
-    if (targets.length > 0) {
-      return 'Attacco: scegli una creatura IA ortogonalmente adiacente.';
-    }
-
-    return 'Attacco diretto disponibile: non ci sono nemici IA ortogonalmente adiacenti.';
-  }
-
-  if (selectedCreaturePosition) {
-    return 'Scegli Attacca o Muovi per la creatura selezionata.';
-  }
-
-  return 'Seleziona una carta per giocarla o una tua creatura pronta per scegliere Attacca o Muovi.';
-}
-
-function validMovePositions() {
-  if (!selectedCreaturePosition || !selectedActionMode || selectedActionMode !== 'move') {
+function validMovePositionsForSelectedCreature() {
+  if (!selectedCreaturePosition) {
     return [];
   }
 
@@ -148,25 +128,48 @@ function validMovePositions() {
   }
 
   const candidates = [
-    { row: selectedCreaturePosition.row - 1, col: selectedCreaturePosition.col },
-    { row: selectedCreaturePosition.row + 1, col: selectedCreaturePosition.col },
-    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col - 1 },
-    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col + 1 },
+    {
+      row: selectedCreaturePosition.row - 1,
+      col: selectedCreaturePosition.col,
+    },
+    {
+      row: selectedCreaturePosition.row + 1,
+      col: selectedCreaturePosition.col,
+    },
+    {
+      row: selectedCreaturePosition.row,
+      col: selectedCreaturePosition.col - 1,
+    },
+    {
+      row: selectedCreaturePosition.row,
+      col: selectedCreaturePosition.col + 1,
+    },
   ];
 
   return candidates.filter((position) => {
-    const inBoard =
+    const isInsideBoard =
       position.row >= 0 &&
       position.row <= 2 &&
       position.col >= 0 &&
       position.col <= 2;
 
-    return inBoard && !getCell(position);
+    return isInsideBoard && !getCell(position);
   });
 }
 
+function validMovePositions() {
+  if (selectedActionMode !== 'move') {
+    return [];
+  }
+
+  return validMovePositionsForSelectedCreature();
+}
+
 function validAttackTargets() {
-  if (!selectedCreaturePosition || selectedActionMode !== 'attack') {
+  if (
+    !selectedCreaturePosition ||
+    selectedActionMode !== 'attack'
+  ) {
     return [];
   }
 
@@ -177,31 +180,71 @@ function validAttackTargets() {
   }
 
   const candidates = [
-    { row: selectedCreaturePosition.row - 1, col: selectedCreaturePosition.col },
-    { row: selectedCreaturePosition.row + 1, col: selectedCreaturePosition.col },
-    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col - 1 },
-    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col + 1 },
+    {
+      row: selectedCreaturePosition.row - 1,
+      col: selectedCreaturePosition.col,
+    },
+    {
+      row: selectedCreaturePosition.row + 1,
+      col: selectedCreaturePosition.col,
+    },
+    {
+      row: selectedCreaturePosition.row,
+      col: selectedCreaturePosition.col - 1,
+    },
+    {
+      row: selectedCreaturePosition.row,
+      col: selectedCreaturePosition.col + 1,
+    },
   ];
 
   return candidates.filter((position) => {
-    const inBoard =
+    const isInsideBoard =
       position.row >= 0 &&
       position.row <= 2 &&
       position.col >= 0 &&
       position.col <= 2;
 
-    const cell = inBoard ? getCell(position) : null;
+    const cell = isInsideBoard ? getCell(position) : null;
 
     return cell?.owner_index === 0;
   });
 }
 
 function canDirectAttack() {
-  return (
+  return Boolean(
     selectedActionMode === 'attack' &&
-    selectedCreaturePosition &&
-    validAttackTargets().length === 0
+      selectedCreaturePosition &&
+      validAttackTargets().length === 0,
   );
+}
+
+function selectedModeText() {
+  if (!gameState) {
+    return 'Premi “Nuova partita” per iniziare un test.';
+  }
+
+  if (selectedHandInstanceId) {
+    return 'Carta selezionata: per evocare un Mostro scegli una cella libera nella tua riga inferiore.';
+  }
+
+  if (selectedActionMode === 'move') {
+    return 'Movimento: scegli una cella libera ortogonalmente adiacente. Costa 1 mana e rende la creatura stanca.';
+  }
+
+  if (selectedActionMode === 'attack') {
+    if (validAttackTargets().length > 0) {
+      return 'Attacco: scegli una creatura IA ortogonalmente adiacente.';
+    }
+
+    return 'Nessun nemico è adiacente: puoi attaccare direttamente l’IA.';
+  }
+
+  if (selectedCreaturePosition) {
+    return 'Scegli Attacca o Muovi per la creatura selezionata.';
+  }
+
+  return 'Seleziona una carta o una tua creatura pronta.';
 }
 
 function setBusy(value) {
@@ -212,11 +255,12 @@ function setBusy(value) {
 function renderControls() {
   const canAct = isHumanTurn() && !busy;
   const selectedCreature = findSelectedCreature();
-  const canUseCreatureActions =
+  const canUseCreatureActions = Boolean(
     canAct &&
-    selectedCreature &&
-    selectedCreature.owner_index === 1 &&
-    !selectedCreature.tired;
+      selectedCreature &&
+      selectedCreature.owner_index === 1 &&
+      !selectedCreature.tired,
+  );
 
   const newMatchButton = byId('new-match-button');
   const endTurnButton = byId('end-turn-button');
@@ -225,6 +269,7 @@ function renderControls() {
   const directAttackButton = byId('direct-attack-button');
   const attackChoiceButton = byId('choose-attack-button');
   const moveChoiceButton = byId('choose-move-button');
+  const instructions = byId('selection-instructions');
 
   if (newMatchButton) {
     newMatchButton.disabled = busy;
@@ -257,12 +302,12 @@ function renderControls() {
 
   if (moveChoiceButton) {
     const hasMana = (getHuman()?.current_mana ?? 0) >= 1;
-    const hasDestination = validMovePositionsForSelectedCreature().length > 0;
+    const hasDestination =
+      validMovePositionsForSelectedCreature().length > 0;
 
-    moveChoiceButton.disabled = !canUseCreatureActions || !hasMana || !hasDestination;
+    moveChoiceButton.disabled =
+      !canUseCreatureActions || !hasMana || !hasDestination;
   }
-
-  const instructions = byId('selection-instructions');
 
   if (instructions) {
     instructions.textContent = selectedModeText();
@@ -271,47 +316,23 @@ function renderControls() {
   renderCreatureActionPanel();
 }
 
-function validMovePositionsForSelectedCreature() {
-  if (!selectedCreaturePosition) {
-    return [];
-  }
-
-  const creature = getCell(selectedCreaturePosition);
-
-  if (!creature || creature.owner_index !== 1 || creature.tired) {
-    return [];
-  }
-
-  const candidates = [
-    { row: selectedCreaturePosition.row - 1, col: selectedCreaturePosition.col },
-    { row: selectedCreaturePosition.row + 1, col: selectedCreaturePosition.col },
-    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col - 1 },
-    { row: selectedCreaturePosition.row, col: selectedCreaturePosition.col + 1 },
-  ];
-
-  return candidates.filter((position) => {
-    const inBoard =
-      position.row >= 0 &&
-      position.row <= 2 &&
-      position.col >= 0 &&
-      position.col <= 2;
-
-    return inBoard && !getCell(position);
-  });
-}
-
 function renderCreatureActionPanel() {
   const panel = byId('creature-action-panel');
-  const name = byId('selected-creature-name');
-  const details = byId('selected-creature-details');
+  const nameElement = byId('selected-creature-name');
+  const detailsElement = byId('selected-creature-details');
 
-  if (!panel || !name || !details) {
+  if (!panel || !nameElement || !detailsElement) {
     return;
   }
 
   const creature = findSelectedCreature();
 
-  if (!creature || creature.owner_index !== 1 || creature.tired || !isHumanTurn()) {
+  if (
+    !creature ||
+    creature.owner_index !== 1 ||
+    creature.tired ||
+    !isHumanTurn()
+  ) {
     panel.classList.add('hidden');
     return;
   }
@@ -319,10 +340,11 @@ function renderCreatureActionPanel() {
   panel.classList.remove('hidden');
 
   const card = cardCache.get(creature.card_id);
-  name.textContent = card?.name ?? 'Creatura selezionata';
-  details.textContent =
+
+  nameElement.textContent = card?.name ?? 'Creatura selezionata';
+  detailsElement.textContent =
     `ATK ${creature.attack} · HP ${creature.hp}/${creature.max_hp} · ` +
-    `Attacca gratis oppure Muovi pagando 1 mana.`;
+    'Attacca gratuitamente oppure Muovi pagando 1 mana.';
 }
 
 async function api(path, options = {}) {
@@ -398,12 +420,18 @@ function renderStatus() {
   }
 
   const activeLabel =
-    gameState.active_player_index === 1 ? 'Il tuo turno' : 'Turno IA';
+    gameState.active_player_index === 1
+      ? 'Il tuo turno'
+      : 'Turno IA';
 
   matchStatus.textContent =
-    gameState.status === 'finished' ? 'Terminata' : 'In corso';
+    gameState.status === 'finished'
+      ? 'Terminata'
+      : 'In corso';
 
-  turnStatus.textContent = `${gameState.current_turn} · ${activeLabel}`;
+  turnStatus.textContent =
+    `${gameState.current_turn} · ${activeLabel}`;
+
   phaseStatus.textContent = gameState.phase;
 }
 
@@ -456,7 +484,7 @@ async function renderFieldSpell(player, elementId, ownerLabel) {
   }
 }
 
-function positionClass(row) {
+function rowClass(row) {
   if (row === 0) {
     return 'ai-row';
   }
@@ -474,7 +502,7 @@ function isValidMoveCell(position) {
   );
 }
 
-function isValidTargetCell(position) {
+function isValidAttackTarget(position) {
   return validAttackTargets().some((candidate) =>
     positionsEqual(candidate, position),
   );
@@ -488,8 +516,15 @@ function boardCellElement(position, cell, card) {
   button.dataset.row = String(position.row);
   button.dataset.col = String(position.col);
 
-  const selectedCreature = positionsEqual(position, selectedCreaturePosition);
-  const selectedTarget = positionsEqual(position, selectedAttackTarget);
+  const isSelectedCreature = positionsEqual(
+    position,
+    selectedCreaturePosition,
+  );
+
+  const isSelectedTarget = positionsEqual(
+    position,
+    selectedAttackTarget,
+  );
 
   if (!cell) {
     button.classList.add('empty');
@@ -498,8 +533,15 @@ function boardCellElement(position, cell, card) {
       button.classList.add('valid-move');
     }
 
+    const zoneName =
+      position.row === 0
+        ? 'Riga IA'
+        : position.row === 1
+          ? 'Centro'
+          : 'Tua riga';
+
     button.innerHTML = `
-      <span class="empty-label">Cella libera</span>
+      <span class="empty-label">${zoneName}</span>
       <span class="cell-coordinate">[${position.row},${position.col}]</span>
     `;
 
@@ -510,25 +552,31 @@ function boardCellElement(position, cell, card) {
     return button;
   }
 
-  button.classList.add(cell.owner_index === 1 ? 'human-card' : 'ai-card');
+  button.classList.add(
+    cell.owner_index === 1 ? 'human-card' : 'ai-card',
+  );
 
   if (cell.tired) {
     button.classList.add('tired');
   }
 
-  if (selectedCreature) {
+  if (isSelectedCreature) {
     button.classList.add('selected-creature');
   }
 
-  if (isValidTargetCell(position)) {
+  if (isValidAttackTarget(position)) {
     button.classList.add('valid-target');
   }
 
-  if (selectedTarget) {
+  if (isSelectedTarget) {
     button.classList.add('selected-target');
   }
 
-  const ownerName = cell.owner_index === 1 ? 'Tua creatura' : 'Creatura IA';
+  const ownerName =
+    cell.owner_index === 1
+      ? 'Tua creatura'
+      : 'Creatura IA';
+
   const auraCount = cell.auras?.length ?? 0;
 
   button.innerHTML = `
@@ -560,13 +608,9 @@ async function renderBoard() {
 
   const board = getBoard();
 
-  if (!board) {
-    return;
-  }
-
   for (let row = 0; row < 3; row += 1) {
     const rowElement = document.createElement('div');
-    rowElement.className = `board-row ${positionClass(row)}`;
+    rowElement.className = `board-row ${rowClass(row)}`;
 
     for (let col = 0; col < 3; col += 1) {
       const position = { row, col };
@@ -581,7 +625,9 @@ async function renderBoard() {
         }
       }
 
-      rowElement.appendChild(boardCellElement(position, cell, card));
+      rowElement.appendChild(
+        boardCellElement(position, cell, card),
+      );
     }
 
     container.appendChild(rowElement);
@@ -610,7 +656,9 @@ function handCardElement(instance, card) {
     <span class="card-cost">${escapeHtml(card.mana_cost)}</span>
     <span class="card-type">${escapeHtml(card.card_type)}</span>
     <strong class="card-name">${escapeHtml(card.name)}</strong>
-    <span class="card-effect">${escapeHtml(card.effect_text ?? 'Nessun effetto.')}</span>
+    <span class="card-effect">${escapeHtml(
+      card.effect_text ?? 'Nessun effetto.',
+    )}</span>
     <span class="card-stats">${escapeHtml(stats)}</span>
   `;
 
@@ -733,7 +781,10 @@ async function createMatch() {
     await refreshLogs();
     await render();
 
-    setGameMessage('Partita pronta. È il tuo turno.', 'success');
+    setGameMessage(
+      'Partita pronta. Seleziona una carta dalla mano e schierala nella tua riga.',
+      'success',
+    );
   } catch (error) {
     setGameMessage(
       error instanceof Error
@@ -752,7 +803,9 @@ async function onHandCardClick(instanceId) {
   }
 
   selectedHandInstanceId =
-    selectedHandInstanceId === instanceId ? null : instanceId;
+    selectedHandInstanceId === instanceId
+      ? null
+      : instanceId;
 
   selectedCreaturePosition = null;
   selectedActionMode = null;
@@ -775,7 +828,10 @@ async function onBoardCellClick(position) {
 
   if (selectedActionMode === 'move') {
     if (!isValidMoveCell(position)) {
-      setGameMessage('Scegli una cella libera ortogonalmente adiacente.', 'error');
+      setGameMessage(
+        'Scegli una cella libera ortogonalmente adiacente.',
+        'error',
+      );
       return;
     }
 
@@ -784,22 +840,30 @@ async function onBoardCellClick(position) {
   }
 
   if (selectedActionMode === 'attack') {
-    if (cell?.owner_index === 0 && isValidTargetCell(position)) {
+    if (cell?.owner_index === 0 && isValidAttackTarget(position)) {
       selectedAttackTarget = position;
+
       await performAttack({
         type: 'creature',
         position,
       });
+
       return;
     }
 
-    setGameMessage('Scegli una creatura IA ortogonalmente adiacente.', 'error');
+    setGameMessage(
+      'Scegli una creatura IA ortogonalmente adiacente.',
+      'error',
+    );
     return;
   }
 
   if (cell?.owner_index === 1) {
     if (cell.tired) {
-      setGameMessage('Questa creatura è stanca: non può attaccare né muoversi.', 'error');
+      setGameMessage(
+        'Questa creatura è stanca: non può attaccare né muoversi.',
+        'error',
+      );
       return;
     }
 
@@ -808,21 +872,21 @@ async function onBoardCellClick(position) {
     selectedActionMode = null;
     selectedAttackTarget = null;
 
-    await preloadSelectedCard(cell.card_id);
+    try {
+      await getCard(cell.card_id);
+    } catch {
+      // La carta resta selezionabile anche se il dettaglio non si carica.
+    }
+
     await render();
     return;
   }
 
   if (cell?.owner_index === 0) {
-    setGameMessage('Seleziona prima una tua creatura pronta.', 'error');
-  }
-}
-
-async function preloadSelectedCard(cardId) {
-  try {
-    await getCard(cardId);
-  } catch {
-    return;
+    setGameMessage(
+      'Seleziona prima una tua creatura pronta.',
+      'error',
+    );
   }
 }
 
@@ -837,7 +901,10 @@ async function handleCardPlacementOrTarget(position, cell) {
 
   const card = await getCard(instance.card_id);
 
-  if (card.card_type === 'monster' || card.card_type === 'mostrissimo') {
+  if (
+    card.card_type === 'monster' ||
+    card.card_type === 'mostrissimo'
+  ) {
     if (position.row !== 2 || cell) {
       setGameMessage(
         'Puoi evocare creature solo in una cella libera della tua riga inferiore.',
@@ -855,7 +922,10 @@ async function handleCardPlacementOrTarget(position, cell) {
 
   if (card.card_type === 'aura') {
     if (!cell) {
-      setGameMessage('Un’Aura richiede una creatura bersaglio.', 'error');
+      setGameMessage(
+        'Un’Aura richiede una creatura bersaglio.',
+        'error',
+      );
       return;
     }
 
@@ -917,19 +987,24 @@ async function chooseAttack() {
 
 async function chooseMove() {
   const creature = findSelectedCreature();
-  const player = getHuman();
 
   if (!creature || creature.owner_index !== 1 || creature.tired) {
     return;
   }
 
-  if ((player?.current_mana ?? 0) < 1) {
-    setGameMessage('Servono 1 mana per muovere una creatura.', 'error');
+  if ((getHuman()?.current_mana ?? 0) < 1) {
+    setGameMessage(
+      'Servono 1 mana per muovere una creatura.',
+      'error',
+    );
     return;
   }
 
   if (validMovePositionsForSelectedCreature().length === 0) {
-    setGameMessage('Non esistono celle libere ortogonalmente adiacenti.', 'error');
+    setGameMessage(
+      'Non esistono celle libere ortogonalmente adiacenti.',
+      'error',
+    );
     return;
   }
 
@@ -938,7 +1013,11 @@ async function chooseMove() {
   selectedHandInstanceId = null;
 
   await render();
-  setGameMessage('Scegli una cella libera adiacente per muovere la creatura.', 'success');
+
+  setGameMessage(
+    'Scegli una cella libera adiacente per muovere la creatura.',
+    'success',
+  );
 }
 
 async function performPlayCard(instanceId, options) {
@@ -1000,7 +1079,10 @@ async function performMove(from, to) {
     await refreshLogs();
     await render();
 
-    setGameMessage('Creatura mossa: 1 mana speso e creatura stanca.', 'success');
+    setGameMessage(
+      'Creatura mossa: 1 mana speso e creatura stanca.',
+      'success',
+    );
   } catch (error) {
     setGameMessage(
       error instanceof Error
@@ -1015,7 +1097,10 @@ async function performMove(from, to) {
 
 async function performAttack(target) {
   if (!matchId || !selectedCreaturePosition) {
-    setGameMessage('Seleziona prima una creatura attaccante.', 'error');
+    setGameMessage(
+      'Seleziona prima una creatura attaccante.',
+      'error',
+    );
     return;
   }
 
@@ -1036,7 +1121,10 @@ async function performAttack(target) {
     await refreshLogs();
     await render();
 
-    setGameMessage('Attacco risolto. La creatura ora è stanca.', 'success');
+    setGameMessage(
+      'Attacco risolto. La creatura ora è stanca.',
+      'success',
+    );
   } catch (error) {
     setGameMessage(
       error instanceof Error
