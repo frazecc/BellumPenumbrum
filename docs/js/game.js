@@ -18,7 +18,7 @@ const escape = x => String(x ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;
 const creature = d => d.card_type === 'monster' || d.card_type === 'mostrissimo';
 const effect = d => Array.isArray(d.effect_json?.effects) ? d.effect_json.effects.find(e => e?.target === 'any_creature' || e?.type === 'return_hand') : d.effect_json;
 const needsTarget = d => d.card_type === 'aura' || effect(d)?.target === 'any_creature' || effect(d)?.type === 'return_hand';
-const targetAllowed = (d,c) => Boolean(c && (d.card_type === 'aura' || !creature(d) && !needsTarget(d) || (effect(d)?.type === 'heal' ? c.owner_index === 1 : effect(d)?.type === 'damage' || effect(d)?.type === 'damage_creature' ? c.owner_index === 0 : true)));
+const targetAllowed = (d,c) => Boolean(c && (d.card_type === 'aura' || d.card_type === 'instant' || !creature(d) && !needsTarget(d) || (effect(d)?.type === 'heal' ? c.owner_index === 1 : effect(d)?.type === 'damage' || effect(d)?.type === 'damage_creature' ? c.owner_index === 0 : true)));
 function clear() { selectedCard = null; selectedUnit = null; mode = null; pendingTarget = null; }
 function notice(text, type = '') { if ($('game-message')) { $('game-message').textContent = text; $('game-message').className = `game-message ${type}`; } }
 function fail(error) { console.error(error); notice(error instanceof Error ? error.message : 'Errore inatteso', 'error'); }
@@ -32,7 +32,7 @@ function control() {
   if ($('creature-action-panel')) $('creature-action-panel').classList.toggle('hidden',!ready);
   if (unit && $('selected-creature-name')) $('selected-creature-name').textContent = cache.get(unit.card_id)?.name ?? 'Creatura';
   if (unit && $('selected-creature-details')) $('selected-creature-details').textContent = `ATK ${unit.attack} · HP ${unit.hp}/${unit.max_hp} · ${unit.tired ? 'Stanca' : 'Pronta'}`;
-  if ($('selection-instructions')) $('selection-instructions').textContent = !state ? 'Premi Nuova partita.' : selectedCard ? pendingTarget ? 'Bersaglio ETB scelto: clicca una cella libera nella riga Tu.' : mode === 'etb-target' ? 'Seleziona un bersaglio evidenziato, poi una cella libera nella riga Tu.' : 'Scegli una cella della riga Tu per evocare.' : mode === 'move' ? 'Muovi: clicca una cella verde; costa 1 mana e non stanca.' : mode === 'attack' ? foes().length ? 'Clicca una creatura IA evidenziata.' : 'Nessun altro bersaglio valido: premi Attacca IA direttamente.' : selectedUnit ? 'Scegli Attacca (0 mana) oppure Muovi (1 mana).' : 'Seleziona una carta in mano oppure una tua creatura pronta.';
+  if ($('selection-instructions')) $('selection-instructions').textContent = !state ? 'Premi Nuova partita.' : selectedCard ? pendingTarget ? 'Bersaglio ETB scelto: clicca una cella libera nella riga Tu.' : mode === 'etb-target' ? 'Seleziona un bersaglio evidenziato, poi una cella libera nella riga Tu.' : (cache.get(me()?.hand?.find(c => c.instance_id === selectedCard)?.card_id)?.card_type === 'instant' ? 'Istantaneo selezionato: clicca una creatura bersaglio oppure una cella libera per risolverlo nel tuo turno.' : 'Scegli una cella della riga Tu per evocare.') : mode === 'move' ? 'Muovi: clicca una cella verde; costa 1 mana e non stanca.' : mode === 'attack' ? foes().length ? 'Clicca una creatura IA evidenziata.' : 'Nessun altro bersaglio valido: premi Attacca IA direttamente.' : selectedUnit ? 'Scegli Attacca (0 mana) oppure Muovi (1 mana).' : 'Seleziona una carta in mano oppure una tua creatura pronta.';
 }
 function setBusy(value) { busy = value; control(); }
 async function api(path, options = {}) {
