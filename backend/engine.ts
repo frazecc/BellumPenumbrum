@@ -76,8 +76,8 @@ function locate(s: GameState, id: string) {
   throw new Error('Creatura bersaglio non presente sulla plancia');
 }
 function eligible(s: GameState, owner: PlayerIndex, effect: EffectDefinition) {
-  if (effect.type === 'damage' || effect.type === 'damage_creature') return units(s, other(owner));
-  if (effect.type === 'heal') return units(s, owner);
+  if ((effect.type === 'damage' || effect.type === 'damage_creature') && effect.timing !== 'instant') return units(s, other(owner));
+  if (effect.type === 'heal' && effect.timing !== 'instant') return units(s, owner);
   return [...units(s, 0), ...units(s, 1)];
 }
 function chosenTarget(s: GameState, owner: PlayerIndex, effect: EffectDefinition, id: string | null) {
@@ -135,73 +135,115 @@ async function draw(id: string, s: GameState, recipient: PlayerIndex, amount: nu
   }
   return taken;
 }
+type Context = { id: string; state: GameState; owner: PlayerIndex; opponent: PlayerIndex; card: CardData; effect: EffectDefinition; amount: number; targetId: string | null };
+async function effectDraw(c: Context) {
+  const recipient = c.effect.target === 'opponent' ? c.opponent : c.owner;
+  const count = await draw(c.id, c.state, recipient, c.amount);
+  await log(c.id, c.state, c.owner, 'effect_draw', `${c.card.name}: ${recipient === 1 ? 'peschi' : 'l’IA pesca'} ${count} carta/e su ${c.amount} richiesta/e.`);
+}
+async function effectDiscard(c: Context) {
+  const recipient = c.effect.target === 'self' ? c.owner : c.opponent;
+  let count = 0;
+  while (count < c.amount && c.state.players[recipient].hand.length) {
+    const index = Math.floor(Math.random() * c.state.players[recipient].hand.length);
+    c.state.players[recipient].graveyard.push(c.state.players[recipient].hand.splice(index, 1)[0]); count++;
+  }
+  await log(c.id, c.state, c.owner, 'effect_discard', `${c.card.name}: ${label(recipient)} scarta ${count} carta/e.`);
+}
+async function effectHeal(c: Context) {
+  const target = c.effect.target ?? 'self';
+  if (target === 'any_creature') {
+    const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)?.cell;
+    if (!selected) throw new Error('Seleziona una creatura da curare');
+    selected.hp = Math.min(selected.max_hp, selected.hp + c.amount);
+  } else if (target.startsWith('all_creatures')) {
+    const owners = target === 'all_creatures_opponent' ? [c.opponent] : [c.owner];
+    for (const p of owners) for (const { cell } of units(c.state, p)) cell.hp = Math.min(cell.max_hp, cell.hp + c.amount);
+  } else c.state.players[target === 'opponent' ? c.opponent : c.owner].life += c.amount;
+  await log(c.id, c.state, c.owner, 'effect_heal', `${c.card.name}: cura ${c.amount}.`);
+}
+async function effectDamage(c: Context) {
+  if (c.effect.target === 'all_creatures') {
+    const snapshot = [...units(c.state, 0), ...units(c.state, 1)];
+    for (const { position, cell } of snapshot) if (at(c.state, position)?.instance_id === cell.instance_id) cell.hp -= c.amount;
+    await log(c.id, c.state, c.owner, 'effect_damage_all', `${c.card.name}: ${c.amount} danno/i a tutte le creature.`);
+    for (const { position, cell } of snapshot) if (at(c.state, position)?.instance_id === cell.instance_id && cell.hp <= 0) await destroy(c.id, c.state, position, c.owner);
+    return;
+  }
+  if (c.effect.target !== 'any_creature' || !c.targetId) throw new Error('Seleziona una creatura bersaglio');
+  const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)!;
+  selected.cell.hp -= c.amount;
+  await log(c.id, c.state, c.owner, 'effect_damage', `${c.card.name}: infligge ${c.amount} danno/i a una creatura.`, { target_instance_id: c.targetId });
+  if (selected.cell.hp <= 0) await destroy(c.id, c.state, selected.position, c.owner);
+}
+async function effectReturnHand(c: Context) {
+  if (!c.targetId) throw new Error('Seleziona una creatura bersaglio');
+  const { cell, position } = chosenTarget(c.state, c.owner, c.effect, c.targetId)!;
+  put(c.state, position, null);
+  c.state.players[cell.owner_index].hand.push(instance(cell));
+  c.state.players[cell.owner_index].graveyard.push(...cell.auras);
+  await log(c.id, c.state, c.owner, 'effect_return_hand', `${c.card.name}: una creatura torna in mano.`);
+}
+async function effectBuff(c: Context) {
+  if (c.effect.target !== 'any_creature' || !c.targetId) throw new Error('Seleziona una creatura da potenziare');
+  const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)!.cell as BoardCell & { temp_attack?: number };
+  const detail = c.effect as EffectDefinition & { stat?: string; duration?: string };
+  if (detail.stat === 'hp') {
+    if (detail.duration !== 'permanent') throw new Error('Durata potenziamento HP non supportata');
+    selected.max_hp += c.amount; selected.hp += c.amount;
+  } else if (detail.stat === 'attack') {
+    selected.attack += c.amount;
+    if (detail.duration === 'turn') selected.temp_attack = (selected.temp_attack ?? 0) + c.amount;
+    else if (detail.duration !== 'permanent') throw new Error('Durata potenziamento attacco non supportata');
+  } else throw new Error('Statistica del potenziamento non valida');
+  await log(c.id, c.state, c.owner, 'effect_buff', `${c.card.name}: +${c.amount} ${detail.stat === 'hp' ? 'HP permanenti' : detail.duration === 'turn' ? 'attacco fino a fine turno' : 'attacco permanente'}.`);
+}
+function expireTemporaryBuffs(s: GameState) {
+  for (const owner of [0, 1] as const) for (const { cell } of units(s, owner)) {
+    const buffed = cell as BoardCell & { temp_attack?: number };
+    if (buffed.temp_attack) { buffed.attack -= buffed.temp_attack; delete buffed.temp_attack; }
+  }
+}
 async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: PlayerIndex, card: CardData, effect: EffectDefinition, targetId: string | null, etb: boolean) {
-  const n = Number(effect.amount ?? 1);
-  if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Quantità effetto non valida');
-  const target = effect.target ?? 'self';
-  const needsCreature = target === 'any_creature' || effect.type === 'return_hand';
-  if (needsCreature) {
-    const options = eligible(s, owner, effect);
-    if (etb && options.length === 0) {
+  const amount = Number(effect.amount ?? 1);
+  if (!Number.isInteger(amount) || amount < 0 || amount > 20) throw new Error('Quantità effetto non valida');
+  if (effect.target === 'any_creature' || effect.type === 'return_hand') {
+    const available = eligible(s, owner, effect);
+    if (etb && available.length === 0) {
       await log(id, s, owner, 'etb_no_target', `${card.name} entra in campo: nessun bersaglio valido, l’effetto ETB non si attiva.`, { card_id: card.id });
       return;
     }
-    if (options.length && !targetId) throw new Error('Seleziona un bersaglio valido per l’effetto');
-    if (targetId) chosenTarget(s, owner, effect, targetId);
+    if (!targetId) throw new Error('Seleziona un bersaglio valido per l’effetto');
+    chosenTarget(s, owner, effect, targetId);
   }
-  if (effect.type === 'draw') {
-    const p = target === 'opponent' ? opponent : owner;
-    const count = await draw(id, s, p, n);
-    await log(id, s, owner, 'effect_draw', `${card.name}: ${p === 1 ? 'peschi' : 'l’IA pesca'} ${count} carta/e su ${n} richiesta/e.`);
-  } else if (effect.type === 'discard') {
-    const p = target === 'self' ? owner : opponent;
-    let count = 0;
-    while (count < n && s.players[p].hand.length) {
-      const i = Math.floor(Math.random() * s.players[p].hand.length);
-      s.players[p].graveyard.push(s.players[p].hand.splice(i, 1)[0]); count++;
-    }
-    await log(id, s, owner, 'effect_discard', `${card.name}: ${label(p)} scarta ${count} carta/e.`);
-  } else if (effect.type === 'heal') {
-    if (target === 'any_creature') {
-      const c = chosenTarget(s, owner, effect, targetId)?.cell;
-      if (!c) throw new Error('Seleziona una creatura alleata da curare');
-      c.hp = Math.min(c.max_hp, c.hp + n);
-    } else if (target.startsWith('all_creatures')) {
-      const owners = target === 'all_creatures_opponent' ? [opponent] : target === 'all_creatures_self' || target === 'all_creatures' ? [owner] : [owner, opponent];
-      for (const p of owners) for (const { cell } of units(s, p)) cell.hp = Math.min(cell.max_hp, cell.hp + n);
-    } else s.players[target === 'opponent' ? opponent : owner].life += n;
-    await log(id, s, owner, 'effect_heal', `${card.name}: cura ${n}.`);
-  } else if (effect.type === 'damage' || effect.type === 'damage_creature') {
-    if (target !== 'any_creature' || !targetId) throw new Error('Questo effetto richiede una creatura avversaria');
-    const found = chosenTarget(s, owner, effect, targetId)!;
-    found.cell.hp -= n;
-    await log(id, s, owner, 'effect_damage', `${card.name}: infligge ${n} danno/i a una creatura avversaria.`, { target_instance_id: targetId });
-    if (found.cell.hp <= 0) await destroy(id, s, found.position, owner);
-  } else if (effect.type === 'return_hand') {
-    if (!targetId) throw new Error('Seleziona una creatura bersaglio');
-    const { cell, position } = chosenTarget(s, owner, effect, targetId)!;
-    put(s, position, null); s.players[cell.owner_index].hand.push(instance(cell));
-    s.players[cell.owner_index].graveyard.push(...cell.auras);
-    await log(id, s, owner, 'effect_return_hand', `${card.name}: una creatura torna in mano.`);
-  } else {
-    throw new Error(`${card.name}: effetto ${effect.type} non ancora implementato; la carta non può essere giocata.`);
-  }
+  const context: Context = { id, state: s, owner, opponent, card, effect, amount, targetId };
+  if (effect.type === 'draw') await effectDraw(context);
+  else if (effect.type === 'discard') await effectDiscard(context);
+  else if (effect.type === 'heal') await effectHeal(context);
+  else if (effect.type === 'damage' || effect.type === 'damage_creature') await effectDamage(context);
+  else if (effect.type === 'return_hand') await effectReturnHand(context);
+  else if (effect.type === 'buff') await effectBuff(context);
+  else throw new Error(`${card.name}: effetto ${effect.type} non ancora implementato.`);
 }
+
 async function deck(): Promise<CardInstance[]> {
-  const { data, error } = await db.from('cards').select('id,card_type,mana_cost,is_boss').eq('card_type', 'monster');
-  if (error || !data || data.length < 10) throw new Error('Catalogo Mostri insufficiente');
-  const pool = data.map(c => ({ id: String(c.id), cost: Number(c.mana_cost), boss: Boolean(c.is_boss) }));
-  const low = pool.filter(c => c.cost <= 2), mid = pool.filter(c => c.cost >= 2 && c.cost <= 4), high = pool.filter(c => c.cost >= 5);
-  if (!low.length || !mid.length || !high.length) throw new Error('Costi Mostri non compatibili con il mazzo di test');
+  const { data, error } = await db.from('cards').select('id,card_type,mana_cost,is_boss,effect_json').in('card_type', ['monster', 'instant']);
+  if (error || !data) throw new Error(`Catalogo non disponibile: ${error?.message ?? 'nessun risultato'}`);
+  const pool = data.map(c => ({ id: String(c.id), cost: Number(c.mana_cost), boss: Boolean(c.is_boss), type: String(c.card_type), raw: c.effect_json }));
+  const monsters = pool.filter(c => c.type === 'monster');
+  const instantTypes = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
+  const instants = pool.filter(c => c.type === 'instant' && effects(c.raw).length > 0 && effects(c.raw).every(e => instantTypes.has(e.type)));
+  const low = monsters.filter(c => c.cost <= 2), mid = monsters.filter(c => c.cost >= 2 && c.cost <= 4), high = monsters.filter(c => c.cost >= 5);
+  if (!instants.length || !low.length || !mid.length || !high.length) throw new Error('Catalogo insufficiente per il mazzo di test con Istantanei');
   const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)];
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const boss = pick(high.filter(c => c.boss).length ? high.filter(c => c.boss) : high);
-    const chosen = [boss, pick(low), pick(low), pick(mid), pick(mid), pick(mid), pick(mid)];
-    while (chosen.length < 10) chosen.push(pick(pool));
+  for (let attempt = 0; attempt < 300; attempt++) {
+    const bosses = high.filter(c => c.boss);
+    const chosen = [pick(bosses.length ? bosses : high), pick(low), pick(low), pick(mid), pick(mid), pick(mid), pick(instants), pick(instants)];
+    while (chosen.length < 10) chosen.push(pick(monsters));
     const avg = chosen.reduce((sum, c) => sum + c.cost, 0) / 10;
     if (avg >= 2.5 && avg <= 4) return shuffle(chosen.map(c => ({ instance_id: randomUUID(), card_id: c.id })));
   }
-  throw new Error('Impossibile generare un mazzo con media mana tra 2,5 e 4');
+  throw new Error('Impossibile generare un mazzo con curva mana 2,5–4 e due Istantanei');
 }
 function player(index: PlayerIndex, userId: string | null, cards: CardInstance[]): PlayerState {
   return { player_index: index, user_id: userId, life: 20, max_mana: 0, current_mana: 0, deck: cards, hand: [], graveyard: [], extra_deck: [], color_counters: { CHI: 0, INF: 0, PES: 0, BUL: 0, GRO: 0, CLO: 0, IND: 0 }, field_spell: null };
@@ -241,7 +283,9 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   if (card.card_type === 'terraforma' && owner.field_spell) throw new Error('Una Terraforma è già attiva');
   if (card.card_type === 'aura' && !options.targetInstanceId) throw new Error('Seleziona una creatura per l’Aura');
   const onPlay = effects(card.effect_json);
-  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand']);
+  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
+  if (card.card_type === 'instant' && s.active_player_index !== p) throw new Error('Le finestre reattive non sono ancora disponibili');
+  if (card.card_type === 'instant' && effects(card.effect_json).some(e => e.type === 'counter')) throw new Error('Contromagia richiede una Stregoneria avversaria dichiarata');
   if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
   for (const effect of onPlay.filter(e => e.target === 'any_creature' || e.type === 'return_hand')) {
     const candidates = eligible(s, p, effect);
@@ -344,11 +388,11 @@ async function aiTurn(id: string) {
     break;
   }
   const s = await load(id);
-  if (s.status === 'running') { s.phase = 'end'; await log(id, s, 0, 'turn_end', 'L’IA termina il turno.'); await saveGameState(id, s); }
+  if (s.status === 'running') { expireTemporaryBuffs(s); s.phase = 'end'; await log(id, s, 0, 'turn_end', 'L’IA termina il turno.'); await saveGameState(id, s); }
 }
 export async function endHumanTurn(id: string): Promise<GameState> {
   const s = await load(id); assertTurn(s, 1);
-  s.phase = 'end'; await log(id, s, 1, 'turn_end', 'Termini il turno.'); await saveGameState(id, s);
+  expireTemporaryBuffs(s); s.phase = 'end'; await log(id, s, 1, 'turn_end', 'Termini il turno.'); await saveGameState(id, s);
   const ai = await start(id, 0); if (ai.status === 'finished') return ai;
   await aiTurn(id); const after = await load(id);
   return after.status === 'running' ? start(id, 1) : after;
