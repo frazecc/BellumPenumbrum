@@ -15,10 +15,13 @@ const eq = (a,b) => Boolean(a && b && a.row === b.row && a.col === b.col);
 const foes = () => selectedUnit ? around(selectedUnit).filter(p => at(p)?.owner_index === 0) : [];
 const steps = () => selectedUnit && at(selectedUnit)?.owner_index === 1 && !at(selectedUnit)?.tired ? around(selectedUnit).filter(p => p.row !== 0 && !at(p)) : [];
 const escape = x => String(x ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
+const creature = d => d.card_type === 'monster' || d.card_type === 'mostrissimo';
+const effect = d => Array.isArray(d.effect_json?.effects) ? d.effect_json.effects.find(e => e?.target === 'any_creature' || e?.type === 'return_hand') : d.effect_json;
+const needsTarget = d => d.card_type === 'aura' || effect(d)?.target === 'any_creature' || effect(d)?.type === 'return_hand';
+const targetAllowed = (d,c) => Boolean(c && (d.card_type === 'aura' || !creature(d) && !needsTarget(d) || (effect(d)?.type === 'heal' ? c.owner_index === 1 : effect(d)?.type === 'damage' || effect(d)?.type === 'damage_creature' ? c.owner_index === 0 : true)));
 function clear() { selectedCard = null; selectedUnit = null; mode = null; pendingTarget = null; }
 function notice(text, type = '') { if ($('game-message')) { $('game-message').textContent = text; $('game-message').className = `game-message ${type}`; } }
 function fail(error) { console.error(error); notice(error instanceof Error ? error.message : 'Errore inatteso', 'error'); }
-function canSummon() { return Boolean(selectedCard && me()?.hand?.some(c => c.instance_id === selectedCard)); }
 function control() {
   const enabled = myTurn() && !busy, unit = selectedUnit && at(selectedUnit), ready = enabled && unit?.owner_index === 1 && !unit.tired;
   const disable = (id,x) => { if ($(id)) $(id).disabled = Boolean(x); };
@@ -29,7 +32,7 @@ function control() {
   if ($('creature-action-panel')) $('creature-action-panel').classList.toggle('hidden',!ready);
   if (unit && $('selected-creature-name')) $('selected-creature-name').textContent = cache.get(unit.card_id)?.name ?? 'Creatura';
   if (unit && $('selected-creature-details')) $('selected-creature-details').textContent = `ATK ${unit.attack} · HP ${unit.hp}/${unit.max_hp} · ${unit.tired ? 'Stanca' : 'Pronta'}`;
-  if ($('selection-instructions')) $('selection-instructions').textContent = !state ? 'Premi Nuova partita.' : mode === 'summon-target' ? 'Seleziona il bersaglio dell’effetto della creatura, poi scegli una cella libera nella riga Tu.' : selectedCard ? pendingTarget ? 'Bersaglio scelto: clicca una cella libera nella riga Tu.' : 'Seleziona una cella della riga Tu per evocare, o un bersaglio per la magia.' : mode === 'move' ? 'Muovi: clicca una cella verde; costa 1 mana e non stanca.' : mode === 'attack' ? foes().length ? 'Clicca una creatura IA evidenziata.' : 'Nessun altro bersaglio valido: premi Attacca IA direttamente.' : selectedUnit ? 'Scegli Attacca (0 mana) oppure Muovi (1 mana).' : 'Seleziona una carta in mano oppure una tua creatura pronta.';
+  if ($('selection-instructions')) $('selection-instructions').textContent = !state ? 'Premi Nuova partita.' : selectedCard ? pendingTarget ? 'Bersaglio ETB scelto: clicca una cella libera nella riga Tu.' : mode === 'etb-target' ? 'Seleziona un bersaglio evidenziato, poi una cella libera nella riga Tu.' : 'Scegli una cella della riga Tu per evocare.' : mode === 'move' ? 'Muovi: clicca una cella verde; costa 1 mana e non stanca.' : mode === 'attack' ? foes().length ? 'Clicca una creatura IA evidenziata.' : 'Nessun altro bersaglio valido: premi Attacca IA direttamente.' : selectedUnit ? 'Scegli Attacca (0 mana) oppure Muovi (1 mana).' : 'Seleziona una carta in mano oppure una tua creatura pronta.';
 }
 function setBusy(value) { busy = value; control(); }
 async function api(path, options = {}) {
@@ -42,11 +45,19 @@ async function api(path, options = {}) {
   finally { clearTimeout(timeout); }
 }
 async function getCard(id) { if (!cache.has(id)) cache.set(id, (await api(`/cards/${encodeURIComponent(id)}`)).card); return cache.get(id); }
-const needsTarget = d => d.card_type === 'aura' || d.effect_json?.target === 'any_creature' || d.effect_json?.type === 'return_hand';
-const creature = d => d.card_type === 'monster' || d.card_type === 'mostrissimo';
+function targetsOnBoard(d) {
+  const result=[];
+  for (let row=0;row<3;row++) for (let col=0;col<3;col++) {
+    const p={row,col}, c=at(p);
+    if (targetAllowed(d,c)) result.push({position:p,cell:c});
+  }
+  return result;
+}
 async function drawBoard() {
   const root = $('shared-board'); if (!root) { notice('Manca #shared-board: verifica docs/index.html.', 'error'); return; }
   root.replaceChildren();
+  let selectedDefinition=null;
+  if (selectedCard) { const selected=me()?.hand?.find(c=>c.instance_id===selectedCard); if (selected) selectedDefinition=cache.get(selected.card_id)??null; }
   for (let row=0;row<3;row++) {
     const line=document.createElement('div'); line.className=`board-row ${['ai-row','center-row','human-row'][row]}`;
     for (let col=0;col<3;col++) {
@@ -57,7 +68,8 @@ async function drawBoard() {
       if (mode==='move' && steps().some(p=>eq(p,pos))) button.classList.add('valid-move');
       if (mode==='attack' && foes().some(p=>eq(p,pos))) button.classList.add('valid-target');
       if (selectedCard && row===2 && !c) button.classList.add('valid-summon');
-      if (mode==='summon-target' && c) button.classList.add('valid-target');
+      if (selectedCard && selectedDefinition && targetAllowed(selectedDefinition,c) && needsTarget(selectedDefinition)) button.classList.add('valid-target');
+      if (pendingTarget && c?.instance_id===pendingTarget) button.classList.add('selected-target');
       button.setAttribute('aria-label',c?`${d?.name ?? 'Creatura'} ${c.owner_index===1?'Tu':'IA'} ${c.tired?'stanca':'pronta'} riga ${row} colonna ${col}`:`${['Riga IA','Centro','Riga Tu'][row]} colonna ${col}`);
       button.innerHTML=c?`<span class="cell-coordinate">[${row},${col}]</span><span class="card-type">${c.owner_index===1?'TU':'IA'} · ${c.tired?'STANCA':'PRONTA'}</span><strong class="card-name">${escape(d?.name??'Creatura')}</strong><span class="card-effect">${escape(d?.effect_text??'')}</span><span class="card-stats">${c.attack} / ${c.hp}</span>`:`<span class="empty-label">${['Riga IA','Centro','Riga Tu'][row]}<br>[${row},${col}]</span>`;
       button.onclick=()=>boardClick(pos).catch(fail); line.append(button);
@@ -73,7 +85,16 @@ async function drawHand() {
       const d=await getCard(inst.card_id); if (selectedCard===inst.instance_id) button.classList.add('selected-hand-card');
       if (d.mana_cost>me().current_mana) button.classList.add('unaffordable');
       button.innerHTML=`<span class="card-cost">${escape(d.mana_cost)}</span><span class="card-type">${escape(d.card_type)}</span><strong class="card-name">${escape(d.name)}</strong><span class="card-effect">${escape(d.effect_text??'')}</span><span class="card-stats">${d.attack??'—'} / ${d.hp??'—'}</span>`;
-      button.onclick=async()=>{ if (!myTurn() || busy) return; selectedCard=selectedCard===inst.instance_id?null:inst.instance_id; selectedUnit=null; pendingTarget=null; mode=null; await render(); if (selectedCard && creature(d) && needsTarget(d)) notice('Questa creatura richiede un bersaglio per il suo effetto: clicca una creatura sulla plancia, poi scegli dove evocare.', 'success'); };
+      button.onclick=async()=>{
+        if (!myTurn() || busy) return;
+        selectedCard=selectedCard===inst.instance_id?null:inst.instance_id; selectedUnit=null; pendingTarget=null; mode=null;
+        if (selectedCard && creature(d) && needsTarget(d)) {
+          const candidates=targetsOnBoard(d);
+          if (candidates.length) { mode='etb-target'; notice('ETB: scegli una creatura bersaglio evidenziata, poi la cella dove evocare.', 'success'); }
+          else notice('Nessun bersaglio valido: evoca normalmente; l’ETB non si attiverà.', 'success');
+        }
+        await render();
+      };
     } catch(e) { button.textContent='Carta non caricabile'; button.disabled=true; console.warn(e); }
     root.append(button);
   }
@@ -101,12 +122,16 @@ async function boardClick(pos) {
     const inst=me().hand.find(x=>x.instance_id===selectedCard); if (!inst) { clear(); return render(); }
     const d=await getCard(inst.card_id);
     if (creature(d)) {
-      if (c && needsTarget(d)) { pendingTarget=c.instance_id; mode='summon-target'; await render(); notice('Bersaglio scelto: clicca una cella libera nella tua riga per evocare.','success'); return; }
+      const candidates=needsTarget(d)?targetsOnBoard(d):[];
+      if (c && needsTarget(d)) {
+        if (!targetAllowed(d,c)) return notice(effect(d)?.type==='damage'?'Questo ETB può colpire solo creature avversarie.':'Bersaglio non valido per questo ETB.','error');
+        pendingTarget=c.instance_id; mode='etb-target'; await render(); notice('Bersaglio scelto: ora clicca una cella libera della riga Tu per evocare.','success'); return;
+      }
       if (pos.row!==2 || c) return notice('Evoca solo in una cella libera della riga Tu: [2,0], [2,1], [2,2].','error');
-      if (needsTarget(d) && !pendingTarget) return notice('Prima scegli una creatura bersaglio per l’effetto. Se non ci sono creature sul campo, questa carta non è ancora giocabile.','error');
+      if (candidates.length && !pendingTarget) return notice('Esiste un bersaglio valido: selezionalo prima di evocare.','error');
       return action('play-card',{cardInstanceId:inst.instance_id,options:{position:pos,...(pendingTarget?{targetInstanceId:pendingTarget}:{})}},'Creatura evocata.');
     }
-    if (needsTarget(d)) { if (!c) return notice('Seleziona una creatura bersaglio.','error'); return action('play-card',{cardInstanceId:inst.instance_id,options:{targetInstanceId:c.instance_id}},'Carta giocata.'); }
+    if (needsTarget(d)) { if (!targetAllowed(d,c)) return notice('Seleziona una creatura valida per questo effetto.','error'); return action('play-card',{cardInstanceId:inst.instance_id,options:{targetInstanceId:c.instance_id}},'Carta giocata.'); }
     return action('play-card',{cardInstanceId:inst.instance_id,options:{}},'Carta giocata.');
   }
   if (mode==='move') { if (!steps().some(p=>eq(p,pos))) return notice('Seleziona una cella libera adiacente, non nella riga IA.','error'); return action('move',{from:selectedUnit,to:pos},'Creatura mossa: -1 mana; rimane pronta.'); }
