@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="css/compact.css" />
     <link rel="stylesheet" href="css/layout.css" />
     <link rel="stylesheet" href="css/hud-log.css" />
+    <link rel="stylesheet" href="css/hud.css" />
   </head>
   <body>
     <noscript>Bellum Penumbrum richiede JavaScript per funzionare.</noscript>
@@ -28,25 +29,31 @@
       </section>
       <section id="game-screen" class="screen game-screen hidden" aria-live="polite">
         <header class="hud-top panel" aria-label="Stato partita e avversario">
-          <div class="hud-status" aria-label="Stato della partita">
-            <div><span class="status-label">Partita</span><strong id="match-status">Nessuna partita</strong></div>
-            <div><span class="status-label">Turno</span><strong id="turn-status">—</strong></div>
-            <div><span class="status-label">Fase</span><strong id="phase-status">—</strong></div>
-          </div>
-          <div class="hud-opponent" aria-label="Risorse IA">
-            <h2>IA Bellum Penumbrum</h2>
-            <div class="resource-grid">
-              <span>Vita <strong id="opponent-life">20</strong></span>
-              <span>Mano <strong id="opponent-hand-count">0</strong></span>
-              <span>Mazzo <strong id="opponent-deck-count">0</strong></span>
-              <span>Cimitero <strong id="opponent-graveyard-count">0</strong></span>
+          <div class="hud-controls">
+            <div class="hud-status" aria-label="Stato della partita">
+              <div><span class="status-label">Partita</span><strong id="match-status">Nessuna partita</strong></div>
+              <div><span class="status-label">Turno</span><strong id="turn-status">—</strong></div>
+              <div><span class="status-label">Fase</span><strong id="phase-status">—</strong></div>
+            </div>
+            <div class="hud-tools">
+              <button id="new-match-button" class="primary-button" type="button">Nuova partita</button>
+              <span id="signed-in-user" class="signed-in-user"></span>
+              <button id="logout-button" class="secondary-button" type="button">Esci</button>
             </div>
           </div>
-          <div class="hud-tools">
-            <button id="new-match-button" class="primary-button" type="button">Nuova partita</button>
-            <span id="signed-in-user" class="signed-in-user"></span>
-            <button id="logout-button" class="secondary-button" type="button">Esci</button>
-          </div>
+          <section class="arena-hud ai-hud" aria-label="Risorse IA">
+            <div class="hud-group hud-left">
+              <div class="hud-value mana"><span class="hud-label">Mana</span><strong id="opponent-current-mana">0</strong></div>
+              <div class="hud-value mana"><span class="hud-label">Max</span><strong id="opponent-max-mana">0</strong></div>
+              <div class="hud-value life"><span class="hud-label">Vita</span><strong id="opponent-life">20</strong></div>
+            </div>
+            <h2 class="hud-name">IA Bellum Penumbrum</h2>
+            <div class="hud-group hud-right">
+              <div class="hud-value deck"><span class="hud-label">Mazzo</span><strong id="opponent-deck-count">0</strong></div>
+              <div class="hud-value grave"><span class="hud-label">Cimitero</span><strong id="opponent-graveyard-count">0</strong></div>
+            </div>
+          </section>
+          <span id="opponent-hand-count" class="hud-source-only" aria-hidden="true">0</span>
         </header>
         <section class="battlefield panel" aria-label="Scacchiera tattica"><div id="shared-board" class="shared-board"></div></section>
         <aside class="arena-sidebar" aria-label="Offerta ed eventi della partita">
@@ -60,19 +67,25 @@
           <p id="game-message" class="game-message" role="status" aria-live="polite"></p>
         </aside>
         <section class="player-summary-panel panel" aria-label="Giocatore e azioni del turno">
-          <h2 id="player-title" class="player-hud-name">Tu</h2>
-          <div class="resource-grid">
-            <span>Vita <strong id="player-life">20</strong></span>
-            <span>Mana <strong id="player-mana">0 / 0</strong></span>
-            <span>Mano <strong id="player-hand-count">0</strong></span>
-            <span>Mazzo <strong id="player-deck-count">0</strong></span>
-            <span>Cimitero <strong id="player-graveyard-count">0</strong></span>
+          <div class="arena-hud player-hud">
+            <div class="hud-group hud-left">
+              <div class="hud-value mana"><span class="hud-label">Mana</span><strong id="player-current-mana">0</strong></div>
+              <div class="hud-value mana"><span class="hud-label">Max</span><strong id="player-max-mana">0</strong></div>
+              <div class="hud-value life"><span class="hud-label">Vita</span><strong id="player-life">20</strong></div>
+            </div>
+            <h2 id="player-title" class="hud-name">Tu</h2>
+            <div class="hud-group hud-right">
+              <div class="hud-value deck"><span class="hud-label">Mazzo</span><strong id="player-deck-count">0</strong></div>
+              <div class="hud-value grave"><span class="hud-label">Cimitero</span><strong id="player-graveyard-count">0</strong></div>
+            </div>
           </div>
           <div class="action-panel" aria-label="Azioni del turno">
             <button id="direct-attack-button" class="player-target" type="button" disabled>Attacca IA direttamente</button>
             <button id="cancel-selection-button" class="secondary-button" type="button" disabled>Annulla selezione</button>
             <button id="end-turn-button" class="primary-button" type="button" disabled>Fine turno</button>
           </div>
+          <span id="player-mana" class="hud-source-only" aria-hidden="true">0 / 0</span>
+          <span id="player-hand-count" class="hud-source-only" aria-hidden="true">0</span>
         </section>
         <section class="hand-section panel" aria-label="Mano del giocatore">
           <div class="section-heading"><h2>La tua mano</h2><p id="selection-instructions" class="muted">Tocca una miniatura per aprire la carta.</p></div>
@@ -82,5 +95,6 @@
     </main>
     <script type="module" src="js/auth.js"></script>
     <script type="module" src="js/game.js"></script>
+    <script type="module" src="js/hud.js"></script>
   </body>
 </html>
