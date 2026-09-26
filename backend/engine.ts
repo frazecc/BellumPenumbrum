@@ -444,7 +444,7 @@ async function drain(c: Context) {
     else if (step.kind === 'finish_mostrissimo') {
       if (c.s.pending_mostrissimo?.card_id === step.card_id && c.s.pending_mostrissimo.player_index === step.actor) delete c.s.pending_mostrissimo;
     } else if (step.kind === 'check_winner') checkWinner(c, step.reason);
-    else if (step.kind === 'advance_ai') await advanceAi(c);
+    else if (step.kind === 'advance_ai') { c.s.anti_loop_counter = 0; await advanceAi(c); }
   }
   if (c.s.status === 'running' && !c.s.pending_reaction && c.s.work_queue.length) throw new Error('Limite di sicurezza della coda eventi raggiunto');
   if (!c.s.pending_reaction && c.s.work_queue.length === 0) c.s.anti_loop_counter = 0;
@@ -478,10 +478,11 @@ async function startTurn(c: Context, p: PlayerIndex) {
 }
 async function advanceAi(c: Context) {
   const s = c.s;
-  if (s.status !== 'running' || s.active_player_index !== 0 || !s.ai_progress) return;
+  if (s.status !== 'running' || !s.ai_progress) return;
   const progress: AiProgress = s.ai_progress;
   if (progress.stage === 'upkeep') { await startTurn(c, 0); progress.stage = 'actions'; if (s.status === 'running') prepend(s, { kind: 'advance_ai' }); return; }
   if (progress.stage === 'human_upkeep') { await startTurn(c, 1); delete s.ai_progress; return; }
+  if (s.active_player_index !== 0) throw new Error('Cursore IA incoerente: atteso turno IA');
   if (progress.stage === 'end' || progress.actions_taken >= 20) {
     expireTemporaryBuffs(s); s.phase = 'end'; log(c, 0, 'turn_end', 'L’IA termina il turno.');
     progress.stage = 'human_upkeep'; prepend(s, { kind: 'advance_ai' }); return;
