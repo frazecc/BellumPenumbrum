@@ -1,5 +1,5 @@
-// backend/engine.ts — Bellum Penumbrum, stato v4.
-// Caricare solo insieme a backend/types.ts v4, SQL v4 e frontend v4.
+// backend/engine.ts — Bellum Penumbrum v4, Aure e Terraforme passive.
+// Pubblicare soltanto con types.ts, game.js e SQL passivi della stessa consegna.
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type {
@@ -101,7 +101,6 @@ export async function getCardData(id: string): Promise<CardData> {
 }
 
 type Context = { id: string; s: GameState; logs: MatchLogEntry[] };
-type AuraStats = CreatureCell & { aura_attack_bonus?: number; aura_hp_bonus?: number };
 function log(c: Context, owner: number, action: string, description: string, extra: Partial<MatchLogEntry> = {}) {
   c.logs.push({ turn: c.s.current_turn, phase: c.s.phase, player_index: owner, action_type: action, description, ...extra });
 }
@@ -137,7 +136,66 @@ function cleanupLoop(c: Context) {
   c.s.anti_loop_counter = 0;
   log(c, -1, 'anti_loop_cleanup', 'La Penombra divora ogni cosa: venti trigger consecutivi, plancia svuotata.');
 }
-async function destroyCell(c: Context, position: Position, killer: PlayerIndex, reason: 'destroy' | 'sacrifice' = 'destroy') {
+
+// Ogni fonte ha il proprio totale serializzato: i delta preservano il danno preesistente.
+// Nessuna riconciliazione dichiara eventi o apre finestre Trappola.
+async function reconcilePassives(c: Context) {
+  const s = c.s, all = units(s);
+  const totals = new Map<string, { auraAttack: number; auraHp: number; landAttack: number; landHp: number }>();
+  for (const x of all) totals.set(x.cell.instance_id, { auraAttack: 0, auraHp: 0, landAttack: 0, landHp: 0 });
+  for (const host of all) for (const aura of host.cell.auras) {
+    const d = await getCardData(aura.card_id);
+    for (const e of effects(d.effect_json)) {
+      if (e.type !== 'buff' || e.duration !== 'while_attached' || !e.stat) continue;
+      const n = Number(e.amount);
+      if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Bonus Aura non valido');
+      const recipients = e.target === 'enchanted_creature' ? [host] : e.target === 'all_creatures_self' ? units(s, aura.owner_index) : [];
+      for (const recipient of recipients) {
+        const t = totals.get(recipient.cell.instance_id)!;
+        if (e.stat === 'attack') t.auraAttack += n; else t.auraHp += n;
+      }
+    }
+  }
+  for (const land of cells(s).filter(x => x.cell.kind === 'terraforma')) {
+    const d = await getCardData(land.cell.card_id);
+    for (const e of effects(d.effect_json)) {
+      if (e.type !== 'buff' || e.duration !== 'while_in_play' || e.target !== 'all_creatures_self' || !e.stat) continue;
+      const n = Number(e.amount);
+      if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Bonus Terraforma non valido');
+      for (const recipient of units(s, land.cell.owner_index)) {
+        const t = totals.get(recipient.cell.instance_id)!;
+        if (e.stat === 'attack') t.landAttack += n; else t.landHp += n;
+      }
+    }
+  }
+  const dying: { position: Position; id: string; owner: PlayerIndex }[] = [];
+  for (const { position, cell } of all) {
+    const t = totals.get(cell.instance_id)!;
+    const attackDelta = t.auraAttack - (cell.aura_attack_bonus ?? 0) + t.landAttack - (cell.terraforma_attack_bonus ?? 0);
+    const hpDelta = t.auraHp - (cell.aura_hp_bonus ?? 0) + t.landHp - (cell.terraforma_hp_bonus ?? 0);
+    cell.attack += attackDelta; cell.max_hp += hpDelta; cell.hp += hpDelta;
+    cell.aura_attack_bonus = t.auraAttack; cell.aura_hp_bonus = t.auraHp;
+    cell.terraforma_attack_bonus = t.landAttack; cell.terraforma_hp_bonus = t.landHp;
+    if (cell.hp <= 0) dying.push({ position, id: cell.instance_id, owner: cell.owner_index });
+  }
+  // La rimozione di più bonus è simultanea; i trigger alla morte sono accodati una volta.
+  for (const x of dying) if (at(s, x.position)?.instance_id === x.id) await destroyCell(c, x.position, x.owner, 'destroy', false);
+  if (dying.length) await reconcilePassives(c);
+}
+function movementCost(cell: CreatureCell) {
+  // Il costo è 0 se almeno una delle Aure attive impone movement_cost=0.
+  return cell.auras.some(a => movementFreeAuras.has(a.card_id)) ? 0 : 1;
+}
+// Set ricostruito leggendo il catalogo per ogni azione; non si presume l'identità della carta.
+const movementFreeAuras = new Set<string>();
+async function refreshMovementAuras(s: GameState) {
+  movementFreeAuras.clear();
+  for (const host of units(s)) for (const aura of host.cell.auras) {
+    const d = await getCardData(aura.card_id);
+    if (effects(d.effect_json).some(e => e.type === 'movement_cost' && e.duration === 'while_attached' && e.target === 'enchanted_creature' && e.amount === 0)) movementFreeAuras.add(aura.card_id);
+  }
+}
+async function destroyCell(c: Context, position: Position, killer: PlayerIndex, reason: 'destroy' | 'sacrifice' = 'destroy', reconcile = true) {
   const cell = at(c.s, position);
   if (!cell) return;
   put(c.s, position, null);
@@ -151,34 +209,8 @@ async function destroyCell(c: Context, position: Position, killer: PlayerIndex, 
     target_instance_id: null, require_source_on_board: false,
   }));
   prepend(c.s, ...steps);
-  await reconcileAuras(c);
+  if (reconcile) await reconcilePassives(c);
   void killer;
-}
-async function reconcileAuras(c: Context) {
-  const s = c.s, all = units(s);
-  const totals = new Map<string, { attack: number; hp: number }>();
-  for (const host of all) totals.set(host.cell.instance_id, { attack: 0, hp: 0 });
-  for (const host of all) for (const aura of host.cell.auras) {
-    const d = await getCardData(aura.card_id);
-    for (const e of effects(d.effect_json)) {
-      if (e.type !== 'buff' || e.duration !== 'while_attached' || !e.stat) continue;
-      const n = Number(e.amount);
-      if (!Number.isInteger(n) || n < 0 || n > 20) throw new Error('Bonus Aura non valido');
-      const recipients = e.target === 'enchanted_creature' ? [host] : e.target === 'all_creatures_self' ? units(s, aura.owner_index) : [];
-      for (const recipient of recipients) {
-        const entry = totals.get(recipient.cell.instance_id)!;
-        entry[e.stat] += n;
-      }
-    }
-  }
-  for (const { position, cell } of all) {
-    const tracked = cell as AuraStats, next = totals.get(cell.instance_id)!;
-    const attackDelta = next.attack - (tracked.aura_attack_bonus ?? 0);
-    const hpDelta = next.hp - (tracked.aura_hp_bonus ?? 0);
-    cell.attack += attackDelta; cell.max_hp += hpDelta; cell.hp += hpDelta;
-    tracked.aura_attack_bonus = next.attack; tracked.aura_hp_bonus = next.hp;
-    if (cell.hp <= 0 && at(s, position)?.instance_id === cell.instance_id) await destroyCell(c, position, cell.owner_index);
-  }
 }
 async function removeAura(c: Context, id: string) {
   const found = findAura(c.s, id);
@@ -186,7 +218,7 @@ async function removeAura(c: Context, id: string) {
   found.cell.auras = found.cell.auras.filter(a => a.instance_id !== id);
   c.s.players[found.aura.owner_index].graveyard.push(instance(found.aura));
   log(c, found.aura.owner_index, 'aura_removed', 'Un’Aura lascia il campo.', { instance_id: id });
-  await reconcileAuras(c);
+  await reconcilePassives(c);
   return true;
 }
 async function applyEffect(c: Context, task: Extract<PendingWork, { kind: 'resolve_effect' }>) {
@@ -243,13 +275,13 @@ async function applyEffect(c: Context, task: Extract<PendingWork, { kind: 'resol
     s.players[x.cell.owner_index].hand.push(instance(x.cell));
     for (const aura of x.cell.auras) s.players[aura.owner_index].graveyard.push(instance(aura));
     log(c, p, 'effect_return_hand', `${d.name}: una creatura torna in mano.`, { target_instance_id: x.cell.instance_id });
-    await reconcileAuras(c);
+    await reconcilePassives(c);
   } else if (e.type === 'destroy') {
     if (selected) await destroyCell(c, selected.position, p);
     else throw new Error('Distruzione senza bersaglio valido');
   } else if (e.type === 'buff') {
     const recipients = e.target === 'all_creatures' || e.target === 'all_creatures_self' ? units(s, p).map(x => x.cell) : selected ? [selected.cell] : [];
-    if (e.duration === 'while_attached') throw new Error('Il bonus continuo Aura non si risolve come evento');
+    if (e.duration === 'while_attached' || e.duration === 'while_in_play') throw new Error('Un bonus continuo non si risolve come evento');
     for (const cell of recipients) {
       if (e.stat === 'hp' && e.duration === 'permanent') { cell.max_hp += n; cell.hp += n; }
       else if (e.stat === 'attack' && (e.duration === 'turn' || e.duration === 'permanent')) {
@@ -319,14 +351,19 @@ function queueOnPlay(s: GameState, p: PlayerIndex, d: CardData, sourceId: string
     work.push({ kind: 'finish_mostrissimo', actor: p, card_id: d.id });
   prepend(s, ...work);
 }
-function auraEffectsValid(d: CardData) {
-  return effects(d.effect_json).length > 0 && effects(d.effect_json).every(e =>
-    e.type === 'buff' && e.duration === 'while_attached' && (e.target === 'enchanted_creature' || e.target === 'all_creatures_self') && (e.stat === 'hp' || e.stat === 'attack')
-    || e.type === 'draw' && e.timing === 'upkeep_start' && e.target === 'self');
+function passiveAura(d: CardData) {
+  const list = effects(d.effect_json);
+  return list.length > 0 && list.every(e =>
+    e.type === 'buff' && e.duration === 'while_attached' && (e.target === 'enchanted_creature' || e.target === 'all_creatures_self') && (e.stat === 'hp' || e.stat === 'attack') && Number.isInteger(e.amount) && Number(e.amount) >= 0 && Number(e.amount) <= 20
+    || e.type === 'movement_cost' && e.duration === 'while_attached' && e.target === 'enchanted_creature' && e.amount === 0);
+}
+function passiveLand(d: CardData) {
+  const list = effects(d.effect_json);
+  return list.length > 0 && list.every(e => e.type === 'buff' && e.duration === 'while_in_play' && e.target === 'all_creatures_self' && (e.stat === 'hp' || e.stat === 'attack') && Number.isInteger(e.amount) && Number(e.amount) >= 0 && Number(e.amount) <= 20);
 }
 function playableEffects(d: CardData) {
   const list = effects(d.effect_json);
-  return d.card_type === 'aura' ? auraEffectsValid(d) : list.every(e => supported.has(e.type));
+  return d.card_type === 'aura' ? passiveAura(d) : d.card_type === 'terraforma' ? passiveLand(d) : list.every(e => supported.has(e.type) && e.duration !== 'while_attached' && e.duration !== 'while_in_play');
 }
 async function applyEvent(c: Context, e: PendingEvent) {
   const s = c.s, p = e.actor;
@@ -339,17 +376,7 @@ async function applyEvent(c: Context, e: PendingEvent) {
     const count = draw(c, p, 1);
     log(c, p, 'upkeep', `${label(p)} ottiene ${player.current_mana}/${player.max_mana} mana e pesca ${count} carta/e.`);
     if (s.status !== 'running') return;
-    const periodic: PendingWork[] = [];
-    for (const host of units(s)) for (const aura of host.cell.auras) if (aura.owner_index === p) {
-      const d = await getCardData(aura.card_id);
-      effects(d.effect_json).forEach((fx, effect_index) => {
-        if (fx.type === 'draw' && fx.timing === 'upkeep_start') periodic.push({
-          kind: 'resolve_effect', owner: p, card_id: d.id, source_instance_id: aura.instance_id,
-          source: 'aura_upkeep', effect_index, target_instance_id: null, require_source_on_board: true,
-        });
-      });
-    }
-    prepend(s, ...periodic, { kind: 'declare_event', event: { kind: 'upkeep_end', actor: p } });
+    prepend(s, { kind: 'declare_event', event: { kind: 'upkeep_end', actor: p } });
   } else if (e.kind === 'upkeep_end') {
     s.phase = 'main';
     log(c, p, 'upkeep_end', `Termina il MANATENIMENTO di ${label(p)}.`);
@@ -358,37 +385,40 @@ async function applyEvent(c: Context, e: PendingEvent) {
     const d = await getCardData(e.card_id);
     const paid = s.players[p].graveyard.find(x => x.instance_id === e.instance_id);
     if (!paid) return;
+    if (!playableEffects(d)) { log(c, p, 'event_cancelled', `${d.name}: effetto non valido.`); return; }
     if (d.card_type === 'monster' || d.card_type === 'terraforma') {
       if (!e.options.position || !valid(e.options.position) || e.options.position.row !== home(p) || at(s, e.options.position)) {
         log(c, p, 'event_cancelled', `${d.name}: cella non più libera.`); return;
       }
       s.players[p].graveyard = s.players[p].graveyard.filter(x => x.instance_id !== paid.instance_id);
       if (d.card_type === 'terraforma') put(s, e.options.position, { ...paid, kind: 'terraforma', owner_index: p });
-      else {
-        put(s, e.options.position, { ...paid, kind: 'creature', owner_index: p,
-          attack: Number(d.attack ?? 0), hp: Number(d.hp ?? 1), max_hp: Number(d.hp ?? 1),
-          tired: !keyword(d, 'iperattivo'), auras: [] });
-        await reconcileAuras(c);
-      }
+      else put(s, e.options.position, { ...paid, kind: 'creature', owner_index: p,
+        attack: Number(d.attack ?? 0), hp: Number(d.hp ?? 1), max_hp: Number(d.hp ?? 1),
+        tired: !keyword(d, 'iperattivo'), auras: [] });
+      await reconcilePassives(c);
     } else if (d.card_type === 'aura') {
       const host = e.options.targetInstanceId ? findCreature(s, e.options.targetInstanceId) : null;
       if (!host) { log(c, p, 'event_cancelled', `${d.name}: creatura non più presente.`); return; }
       s.players[p].graveyard = s.players[p].graveyard.filter(x => x.instance_id !== paid.instance_id);
       host.cell.auras.push({ ...paid, owner_index: p });
-      await reconcileAuras(c);
+      await reconcilePassives(c);
     } else if (d.card_type !== 'maledizione') {
       log(c, p, 'event_cancelled', `${d.name}: tipo di carta non giocabile.`); return;
     }
     s.players[p].color_counters[d.faction_code] = (s.players[p].color_counters[d.faction_code] ?? 0) + 1;
     log(c, p, 'play_card', `${label(p)} gioca ${d.name}.`, { card_id: d.id, instance_id: paid.instance_id, position: e.options.position ?? null });
-    if (d.card_type !== 'aura') queueOnPlay(s, p, d, paid.instance_id, e.options.targetInstanceId ?? null, d.card_type === 'monster');
+    if (d.card_type === 'monster' || d.card_type === 'maledizione') queueOnPlay(s, p, d, paid.instance_id, e.options.targetInstanceId ?? null, d.card_type === 'monster');
   } else if (e.kind === 'move') {
     const unit = at(s, e.from);
     if (unit?.kind !== 'creature' || unit.instance_id !== e.instance_id || unit.owner_index !== p || unit.tired || !valid(e.to) || !adjacent(e.from, e.to) || !allowed(p, e.to.row) || at(s, e.to)) {
       log(c, p, 'event_cancelled', 'Movimento annullato: creatura o destinazione non più valida.'); return;
     }
+    await refreshMovementAuras(s);
+    if (e.paid_mana !== movementCost(unit)) {
+      log(c, p, 'event_cancelled', 'Movimento annullato: costo passivo cambiato dopo la dichiarazione.'); return;
+    }
     put(s, e.from, null); put(s, e.to, unit);
-    log(c, p, 'move_creature', `${label(p)} muove una creatura spendendo 1 mana.`, { instance_id: unit.instance_id, from_position: e.from, to_position: e.to });
+    log(c, p, 'move_creature', `${label(p)} muove una creatura spendendo ${e.paid_mana} mana.`, { instance_id: unit.instance_id, from_position: e.from, to_position: e.to });
   } else if (e.kind === 'attack') {
     const attacker = at(s, e.from);
     if (attacker?.kind !== 'creature' || attacker.instance_id !== e.instance_id || attacker.owner_index !== p || attacker.tired) {
@@ -419,7 +449,6 @@ async function applyEvent(c: Context, e: PendingEvent) {
     else {
       if (item.kind === 'creature') pending.freed_positions.push(item.position);
       await destroyCell(c, item.position, p, 'sacrifice');
-      await reconcileAuras(c);
     }
     pending.paid.push(item.id);
     log(c, p, 'mostrissimo_sacrifice', `Sacrificio ${pending.paid.length}/${pending.required}: ${item.kind}.`, { instance_id: item.id, position: item.position });
@@ -438,7 +467,7 @@ async function applyEvent(c: Context, e: PendingEvent) {
     if (replacement) s.shared_mostrissimi.push({ instance_id: randomUUID(), card_id: replacement });
     put(s, e.position, { instance_id: offered.instance_id, card_id: d.id, kind: 'creature', owner_index: p,
       attack: Number(d.attack ?? 0), hp: Number(d.hp ?? 1), max_hp: Number(d.hp ?? 1), tired: !keyword(d, 'iperattivo'), auras: [] });
-    await reconcileAuras(c);
+    await reconcilePassives(c);
     s.players[p].color_counters[d.faction_code] = (s.players[p].color_counters[d.faction_code] ?? 0) + 1;
     pending.stage = 'etb'; pending.position = e.position; pending.target_instance_id = e.target_instance_id;
     s.mostrissimo_result = { outcome: 'summoned', message: `${d.name} è stato evocato.` };
@@ -676,11 +705,13 @@ async function advanceAi(c: Context) {
     prepend(s, { kind: 'declare_event', event: { kind: 'hand_card', actor: 0, instance_id: inst.instance_id, card_id: d.id, options, paid_mana: d.mana_cost } }, { kind: 'advance_ai' }); return;
   }
   if (await attemptAiMostrissimo(c)) return;
-  const mover = units(s, 0).find(x => !x.cell.tired && s.players[0].current_mana >= 1 && around(x.position).some(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length));
+  await refreshMovementAuras(s);
+  const mover = units(s, 0).find(x => !x.cell.tired && s.players[0].current_mana >= movementCost(x.cell) && around(x.position).some(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length));
   if (mover) {
     const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length)!;
-    s.players[0].current_mana--; progress.actions_taken++;
-    prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: 0, instance_id: mover.cell.instance_id, from: mover.position, to, paid_mana: 1 } }, { kind: 'advance_ai' }); return;
+    const cost = movementCost(mover.cell);
+    s.players[0].current_mana -= cost; progress.actions_taken++;
+    prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: 0, instance_id: mover.cell.instance_id, from: mover.position, to, paid_mana: cost } }, { kind: 'advance_ai' }); return;
   }
   progress.stage = 'end'; prepend(s, { kind: 'advance_ai' });
 }
@@ -690,12 +721,12 @@ async function deck(): Promise<CardInstance[]> {
   if (error || !data) throw new Error(`Catalogo non disponibile: ${error?.message ?? 'nessun risultato'}`);
   const pool = data.map(x => ({ id: String(x.id), cost: Number(x.mana_cost), boss: Boolean(x.is_boss), type: String(x.card_type), raw: x.effect_json as CardEffectJson | null }));
   const playable = pool.filter(x => {
+    const d = { card_type: x.type, effect_json: x.raw } as CardData;
     const list = effects(x.raw);
-    if (x.type === 'aura') return list.length > 0 && list.every(e =>
-      (e.type === 'buff' && e.duration === 'while_attached' && (e.target === 'enchanted_creature' || e.target === 'all_creatures_self') && (e.stat === 'hp' || e.stat === 'attack'))
-      || (e.type === 'draw' && e.timing === 'upkeep_start' && e.target === 'self'));
+    if (x.type === 'aura') return passiveAura(d);
+    if (x.type === 'terraforma') return passiveLand(d);
     if (x.type === 'instant') return list.length > 0 && !!x.raw?.reaction_trigger && list.every(e => supported.has(e.type) || e.type === 'counter' || e.type === 'nope');
-    return list.every(e => supported.has(e.type));
+    return list.every(e => supported.has(e.type) && e.duration !== 'while_attached' && e.duration !== 'while_in_play');
   });
   const monsters = playable.filter(x => x.type === 'monster');
   const low = monsters.filter(x => x.cost <= 2), mid = monsters.filter(x => x.cost >= 2 && x.cost <= 4), high = monsters.filter(x => x.cost >= 5);
@@ -764,9 +795,11 @@ export async function moveCreature(id: string, p: PlayerIndex, from: Position, t
     if (!valid(from) || !valid(to) || !adjacent(from, to) || !allowed(p, to.row)) throw new Error('Movimento non valido');
     const cell = at(s, from);
     if (cell?.kind !== 'creature' || cell.owner_index !== p || cell.tired || at(s, to)) throw new Error('Creatura stanca, non tua o destinazione occupata');
-    if (s.players[p].current_mana < 1) throw new Error('Serve 1 mana per Muovi');
-    s.players[p].current_mana--;
-    prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: p, instance_id: cell.instance_id, from, to, paid_mana: 1 } });
+    await refreshMovementAuras(s);
+    const cost = movementCost(cell);
+    if (s.players[p].current_mana < cost) throw new Error(`Servono ${cost} mana per Muovi`);
+    s.players[p].current_mana -= cost;
+    prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: p, instance_id: cell.instance_id, from, to, paid_mana: cost } });
   });
 }
 export async function attack(id: string, p: PlayerIndex, from: Position, targetPosition: AttackTarget): Promise<GameState> {

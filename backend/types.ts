@@ -1,6 +1,6 @@
 // backend/types.ts — contratto dello stato serializzato v4.
-// Sostituire insieme a engine.ts v4, SQL di catalogo e frontend v4.
-// Le partite v3 non sono compatibili: creare una nuova partita dopo il deploy.
+// Pubblicare insieme a engine.ts, game.js e al catalogo passivo aggiornati.
+// Le partite v3 non sono compatibili; la versione dello stato resta 4.
 
 export type PlayerIndex = 0 | 1;
 export type MatchStatus = 'not_started' | 'running' | 'finished';
@@ -8,7 +8,8 @@ export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
 export type CardType = 'monster' | 'mostrissimo' | 'maledizione' | 'instant' | 'terraforma' | 'aura';
 export type EffectType =
   | 'draw' | 'damage' | 'damage_creature' | 'heal' | 'discard'
-  | 'return_hand' | 'destroy' | 'buff' | 'counter' | 'nope' | 'custom';
+  | 'return_hand' | 'destroy' | 'buff' | 'movement_cost'
+  | 'counter' | 'nope' | 'custom';
 export type EffectTarget =
   | 'self' | 'opponent' | 'any_creature' | 'enchanted_creature'
   | 'all_creatures' | 'all_creatures_self' | 'all_creatures_opponent'
@@ -30,7 +31,7 @@ export type EffectDefinition = {
   timing?: 'on_play' | 'instant' | 'on_death' | 'upkeep_start';
   effect_id?: string;
   stat?: 'hp' | 'attack';
-  duration?: 'turn' | 'permanent' | 'while_attached';
+  duration?: 'turn' | 'permanent' | 'while_attached' | 'while_in_play';
   reaction_trigger?: ReactionTrigger;
 };
 export type CardEffectJson =
@@ -69,6 +70,12 @@ export type CreatureCell = CardInstance & {
   tired: boolean;
   auras: BoardCellAura[];
   temp_attack?: number;
+  // Totali gia' applicati: consentono il ricalcolo differenziale senza perdere danni.
+  // Le partite v4 esistenti possono non avere questi campi.
+  aura_attack_bonus?: number;
+  aura_hp_bonus?: number;
+  terraforma_attack_bonus?: number;
+  terraforma_hp_bonus?: number;
 };
 export type TerraformaCell = CardInstance & {
   kind: 'terraforma';
