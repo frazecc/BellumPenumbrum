@@ -7,6 +7,7 @@
     <title>Bellum Penumbrum</title>
     <link rel="stylesheet" href="css/style.css" />
     <link rel="stylesheet" href="css/compact.css" />
+    <link rel="stylesheet" href="css/layout.css" />
   </head>
   <body>
     <noscript>Bellum Penumbrum richiede JavaScript per funzionare.</noscript>
@@ -25,47 +26,51 @@
         </div>
       </section>
       <section id="game-screen" class="screen game-screen hidden" aria-live="polite">
-        <header class="topbar panel">
-          <div><p class="eyebrow">Bellum Penumbrum</p><h1>Partita contro l'IA</h1></div>
-          <div class="session-controls"><span id="signed-in-user" class="signed-in-user"></span><button id="logout-button" class="secondary-button" type="button">Esci</button></div>
-        </header>
-        <section class="game-status panel" aria-label="Stato della partita">
-          <div><span class="status-label">Partita</span><strong id="match-status">Nessuna partita</strong></div>
-          <div><span class="status-label">Turno</span><strong id="turn-status">—</strong></div>
-          <div><span class="status-label">Fase</span><strong id="phase-status">—</strong></div>
-          <button id="new-match-button" class="primary-button" type="button">Nuova partita</button>
-        </section>
-        <section class="player-summary opponent-summary panel" aria-label="Stato IA">
-          <div><p class="eyebrow">Avversario</p><h2>IA Bellum Penumbrum</h2></div>
-          <div class="resource-grid"><span>Vita <strong id="opponent-life">20</strong></span><span>Mano <strong id="opponent-hand-count">0</strong></span><span>Mazzo <strong id="opponent-deck-count">0</strong></span><span>Cimitero <strong id="opponent-graveyard-count">0</strong></span></div>
-        </section>
-        <section class="battlefield panel" aria-label="Scacchiera tattica">
-          <div class="battlefield-heading">
-            <div><p class="eyebrow">Plancia condivisa</p><h2>Scacchiera tattica 3×3</h2></div>
-            <div class="field-spells"><div id="opponent-field-spell" class="field-spell-slot">IA: Nessuna Terraforma</div><div id="player-field-spell" class="field-spell-slot">Tu: Nessuna Terraforma</div></div>
+        <header class="hud-top panel" aria-label="Stato partita e avversario">
+          <div class="hud-status" aria-label="Stato della partita">
+            <div><span class="status-label">Partita</span><strong id="match-status">Nessuna partita</strong></div>
+            <div><span class="status-label">Turno</span><strong id="turn-status">—</strong></div>
+            <div><span class="status-label">Fase</span><strong id="phase-status">—</strong></div>
           </div>
-          <div class="board-key" aria-label="Legenda della scacchiera"><span class="board-key-ai">Riga IA</span><span class="board-key-center">Riga centrale</span><span class="board-key-human">La tua riga</span></div>
+          <div class="hud-opponent" aria-label="Risorse IA">
+            <h2>IA Bellum Penumbrum</h2>
+            <div class="resource-grid">
+              <span>Vita <strong id="opponent-life">20</strong></span>
+              <span>Mano <strong id="opponent-hand-count">0</strong></span>
+              <span>Mazzo <strong id="opponent-deck-count">0</strong></span>
+              <span>Cimitero <strong id="opponent-graveyard-count">0</strong></span>
+            </div>
+          </div>
+          <div class="hud-tools">
+            <button id="new-match-button" class="primary-button" type="button">Nuova partita</button>
+            <span id="signed-in-user" class="signed-in-user"></span>
+            <button id="logout-button" class="secondary-button" type="button">Esci</button>
+          </div>
+        </header>
+        <section class="battlefield panel" aria-label="Scacchiera tattica">
           <div id="shared-board" class="shared-board"></div>
         </section>
-        <section id="creature-action-panel" class="creature-action-panel panel hidden" aria-label="Azioni creatura">
-          <div><p class="eyebrow">Creatura selezionata</p><h2 id="selected-creature-name">—</h2><p id="selected-creature-details" class="muted">Scegli un’azione.</p></div>
-          <div class="creature-action-buttons"><button id="choose-attack-button" class="secondary-button" type="button" disabled>Attacca · 0 mana</button><button id="choose-move-button" class="secondary-button" type="button" disabled>Muovi · 1 mana</button><button id="cancel-creature-action-button" class="secondary-button" type="button">Annulla</button></div>
-        </section>
-        <section class="player-summary player-summary-panel panel" aria-label="Stato giocatore">
-          <div><p class="eyebrow">Giocatore</p><h2 id="player-title">Tu</h2></div>
-          <div class="resource-grid"><span>Vita <strong id="player-life">20</strong></span><span>Mana <strong id="player-mana">0 / 0</strong></span><span>Mano <strong id="player-hand-count">0</strong></span><span>Mazzo <strong id="player-deck-count">0</strong></span><span>Cimitero <strong id="player-graveyard-count">0</strong></span></div>
+        <section class="player-summary-panel panel" aria-label="Giocatore e azioni del turno">
+          <h2 id="player-title" class="player-hud-name">Tu</h2>
+          <div class="resource-grid">
+            <span>Vita <strong id="player-life">20</strong></span>
+            <span>Mana <strong id="player-mana">0 / 0</strong></span>
+            <span>Mano <strong id="player-hand-count">0</strong></span>
+            <span>Mazzo <strong id="player-deck-count">0</strong></span>
+            <span>Cimitero <strong id="player-graveyard-count">0</strong></span>
+          </div>
+          <div class="action-panel" aria-label="Azioni del turno">
+            <button id="direct-attack-button" class="player-target" type="button" disabled>Attacca IA direttamente</button>
+            <button id="cancel-selection-button" class="secondary-button" type="button" disabled>Annulla selezione</button>
+            <button id="end-turn-button" class="primary-button" type="button" disabled>Fine turno</button>
+          </div>
         </section>
         <section class="hand-section panel" aria-label="Mano del giocatore">
-          <div class="section-heading"><div><p class="eyebrow">Carte disponibili</p><h2>La tua mano</h2></div><p id="selection-instructions" class="muted">Tocca una miniatura per aprire la carta.</p></div>
+          <div class="section-heading"><h2>La tua mano</h2><p id="selection-instructions" class="muted">Tocca una miniatura per aprire la carta.</p></div>
           <div id="player-hand" class="hand"></div>
         </section>
-        <section class="action-panel panel" aria-label="Azioni del turno">
-          <button id="direct-attack-button" class="player-target" type="button" disabled>Attacca IA direttamente</button>
-          <button id="cancel-selection-button" class="secondary-button" type="button" disabled>Annulla selezione</button>
-          <button id="end-turn-button" class="primary-button" type="button" disabled>Fine turno</button>
-        </section>
         <section class="logs-panel panel" aria-label="Log della partita">
-          <div class="section-heading"><div><p class="eyebrow">Cronologia</p><h2>Log partita</h2></div><button id="refresh-button" class="secondary-button" type="button" disabled>Aggiorna</button></div>
+          <div class="section-heading"><h2>Log partita</h2><button id="refresh-button" class="secondary-button" type="button" disabled>Aggiorna</button></div>
           <ol id="match-logs" class="match-logs"></ol>
         </section>
         <p id="game-message" class="game-message" role="status" aria-live="polite"></p>
