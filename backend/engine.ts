@@ -182,18 +182,13 @@ async function reconcilePassives(c: Context) {
   for (const x of dying) if (at(s, x.position)?.instance_id === x.id) await destroyCell(c, x.position, x.owner, 'destroy', false);
   if (dying.length) await reconcilePassives(c);
 }
-function movementCost(cell: CreatureCell) {
-  // Il costo è 0 se almeno una delle Aure attive impone movement_cost=0.
-  return cell.auras.some(a => movementFreeAuras.has(a.card_id)) ? 0 : 1;
-}
-// Set ricostruito leggendo il catalogo per ogni azione; non si presume l'identità della carta.
-const movementFreeAuras = new Set<string>();
-async function refreshMovementAuras(s: GameState) {
-  movementFreeAuras.clear();
-  for (const host of units(s)) for (const aura of host.cell.auras) {
+async function movementCost(cell: CreatureCell): Promise<0 | 1> {
+  // Legge soltanto le Aure della creatura: nessuno stato condiviso tra partite o richieste.
+  for (const aura of cell.auras) {
     const d = await getCardData(aura.card_id);
-    if (effects(d.effect_json).some(e => e.type === 'movement_cost' && e.duration === 'while_attached' && e.target === 'enchanted_creature' && e.amount === 0)) movementFreeAuras.add(aura.card_id);
+    if (effects(d.effect_json).some(e => e.type === 'movement_cost' && e.duration === 'while_attached' && e.target === 'enchanted_creature' && e.amount === 0)) return 0;
   }
+  return 1;
 }
 async function destroyCell(c: Context, position: Position, killer: PlayerIndex, reason: 'destroy' | 'sacrifice' = 'destroy', reconcile = true) {
   const cell = at(c.s, position);
@@ -413,8 +408,7 @@ async function applyEvent(c: Context, e: PendingEvent) {
     if (unit?.kind !== 'creature' || unit.instance_id !== e.instance_id || unit.owner_index !== p || unit.tired || !valid(e.to) || !adjacent(e.from, e.to) || !allowed(p, e.to.row) || at(s, e.to)) {
       log(c, p, 'event_cancelled', 'Movimento annullato: creatura o destinazione non più valida.'); return;
     }
-    await refreshMovementAuras(s);
-    if (e.paid_mana !== movementCost(unit)) {
+    if (e.paid_mana !== await movementCost(unit)) {
       log(c, p, 'event_cancelled', 'Movimento annullato: costo passivo cambiato dopo la dichiarazione.'); return;
     }
     put(s, e.from, null); put(s, e.to, unit);
@@ -705,11 +699,12 @@ async function advanceAi(c: Context) {
     prepend(s, { kind: 'declare_event', event: { kind: 'hand_card', actor: 0, instance_id: inst.instance_id, card_id: d.id, options, paid_mana: d.mana_cost } }, { kind: 'advance_ai' }); return;
   }
   if (await attemptAiMostrissimo(c)) return;
-  await refreshMovementAuras(s);
-  const mover = units(s, 0).find(x => !x.cell.tired && s.players[0].current_mana >= movementCost(x.cell) && around(x.position).some(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length));
-  if (mover) {
-    const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length)!;
-    const cost = movementCost(mover.cell);
+  for (const mover of units(s, 0)) {
+    if (mover.cell.tired) continue;
+    const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length);
+    if (!to) continue;
+    const cost = await movementCost(mover.cell);
+    if (s.players[0].current_mana < cost) continue;
     s.players[0].current_mana -= cost; progress.actions_taken++;
     prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: 0, instance_id: mover.cell.instance_id, from: mover.position, to, paid_mana: cost } }, { kind: 'advance_ai' }); return;
   }
@@ -795,8 +790,7 @@ export async function moveCreature(id: string, p: PlayerIndex, from: Position, t
     if (!valid(from) || !valid(to) || !adjacent(from, to) || !allowed(p, to.row)) throw new Error('Movimento non valido');
     const cell = at(s, from);
     if (cell?.kind !== 'creature' || cell.owner_index !== p || cell.tired || at(s, to)) throw new Error('Creatura stanca, non tua o destinazione occupata');
-    await refreshMovementAuras(s);
-    const cost = movementCost(cell);
+    const cost = await movementCost(cell);
     if (s.players[p].current_mana < cost) throw new Error(`Servono ${cost} mana per Muovi`);
     s.players[p].current_mana -= cost;
     prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: p, instance_id: cell.instance_id, from, to, paid_mana: cost } });
