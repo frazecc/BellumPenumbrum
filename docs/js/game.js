@@ -124,8 +124,7 @@ function reactionDialog() {
   el = document.createElement('div'); el.id = 'reaction-dialog'; el.className = 'card-detail-overlay hidden';
   el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true');
   el.setAttribute('aria-label','Finestra reattiva');
-  const stage = document.createElement('div');
-  stage.className = 'panel';
+  const stage = document.createElement('div'); stage.className = 'panel';
   stage.style.cssText = 'width:min(94vw,560px);max-height:90dvh;overflow:auto;text-align:center;border-color:#d5a758;box-shadow:0 12px 48px #000';
   const title = document.createElement('h2'); title.id = 'reaction-title'; title.textContent = 'Finestra reattiva';
   const text = document.createElement('p'); text.id = 'reaction-description';
@@ -155,13 +154,10 @@ async function renderReaction() {
     const inst = me()?.hand?.find(x => x.instance_id === instId);
     if (!inst) continue;
     const d = await card(inst.card_id);
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'hand-card';
-    b.style.cssText = 'width:105px;height:145px;flex:0 0 105px';
-    b.innerHTML = cardHTML(d,true);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
+    b.style.cssText = 'width:105px;height:145px;flex:0 0 105px'; b.innerHTML = cardHTML(d,true);
     b.setAttribute('aria-label',`Gioca ${d.name} in risposta`);
-    b.onclick = () => beginTrap(inst,d).catch(fail);
-    choices.append(b);
+    b.onclick = () => beginTrap(inst,d).catch(fail); choices.append(b);
   }
   const actions = $('reaction-actions'); actions.replaceChildren();
   actions.append(button('Passa',() => chooseTrap({windowId:r.window_id,action:'pass'})));
@@ -178,13 +174,75 @@ async function beginTrap(inst,d) {
   if (targetEffect(d)) {
     flow = {kind:'trap-target',windowId:r.window_id,instanceId:inst.instance_id,id:d.id};
     reactionDialog().classList.add('hidden');
-    await render(); notice(`Scegli la creatura bersaglio di ${d.name}.`, 'success');
-    return;
+    await render(); notice(`Scegli la creatura bersaglio di ${d.name}.`, 'success'); return;
   }
   await chooseTrap({windowId:r.window_id,action:'play',cardInstanceId:inst.instance_id});
 }
+
+// Il pannello Cimitero legge le istanze gia' presenti nello stato partita.
+// Non invia richieste di modifica e non interferisce con le scelte di gioco.
+function graveyardDialog() {
+  let el = $('graveyard-dialog');
+  if (el) return el;
+  el = document.createElement('div'); el.id = 'graveyard-dialog'; el.className = 'card-detail-overlay hidden';
+  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-labelledby','graveyard-title');
+  el.style.zIndex = '120';
+  const panel = document.createElement('div'); panel.className = 'panel';
+  panel.style.cssText = 'width:min(94vw,720px);max-height:88dvh;overflow:auto;border-color:#c6a774;text-align:center;box-shadow:0 12px 48px #000';
+  const title = document.createElement('h2'); title.id = 'graveyard-title';
+  const list = document.createElement('div'); list.id = 'graveyard-cards';
+  list.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:.55rem;margin:.7rem 0;max-height:60dvh;overflow:auto';
+  const actions = document.createElement('div'); actions.style.cssText = 'display:flex;justify-content:center';
+  actions.append(button('Chiudi',closeGraveyard));
+  panel.append(title,list,actions); el.append(panel);
+  el.addEventListener('click',e => { if (e.target === el) closeGraveyard(); });
+  document.body.append(el);
+  return el;
+}
+function closeGraveyard() { $('graveyard-dialog')?.classList.add('hidden'); }
+async function openGraveyard(owner) {
+  if (owner !== 0 && owner !== 1) return;
+  if (!state || busy) return;
+  const el = graveyardDialog();
+  const title = $('graveyard-title'), list = $('graveyard-cards');
+  const cards = state.players?.[owner]?.graveyard ?? [];
+  title.textContent = `${owner === 1 ? 'Il tuo cimitero' : 'Cimitero dell’IA'} · ${cards.length}`;
+  list.replaceChildren();
+  if (!cards.length) {
+    const empty = document.createElement('p'); empty.textContent = 'Cimitero vuoto.'; list.append(empty);
+  } else {
+    for (const inst of cards) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
+      b.style.cssText = 'flex:0 0 100px;width:100px;height:145px';
+      try {
+        const d = await card(inst.card_id);
+        b.innerHTML = cardHTML(d,true);
+        b.setAttribute('aria-label',`Apri ${d.name} nel cimitero`);
+        b.onclick = () => { closeGraveyard(); inspect('grave',inst.card_id).catch(fail); };
+      } catch (error) {
+        b.textContent = 'Carta non caricabile'; b.disabled = true; console.warn(error);
+      }
+      list.append(b);
+    }
+  }
+  el.classList.remove('hidden');
+}
+function wireGraveyards() {
+  for (const [id,owner] of [['opponent-graveyard-count',0],['player-graveyard-count',1]]) {
+    const box = $(id)?.closest('.hud-value.grave');
+    if (!box || box.dataset.graveyardReady) continue;
+    box.dataset.graveyardReady = 'true'; box.setAttribute('role','button'); box.setAttribute('tabindex','0');
+    box.setAttribute('aria-label',`Apri ${owner === 1 ? 'il tuo cimitero' : 'il cimitero dell’IA'}`);
+    box.style.cursor = 'pointer';
+    box.addEventListener('click',() => openGraveyard(owner).catch(fail));
+    box.addEventListener('keydown',e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGraveyard(owner).catch(fail); }
+    });
+  }
+}
+
 async function inspect(kind,id,extra={}) {
-  if (busy || reaction()) return;
+  if (busy || (reaction() && kind !== 'grave')) return;
   view = {kind,id,...extra};
   const current = view, d = await card(id);
   if (current !== view) return;
@@ -211,11 +269,9 @@ async function inspect(kind,id,extra={}) {
 }
 async function beginCard(instanceId,d) {
   if (!active() || d.card_type === 'instant') return;
-  close();
-  flow = {kind:'hand',instanceId,id:d.id,step:d.card_type === 'monster' ? 'cell' : (d.card_type === 'aura' || targetEffect(d)) ? 'target' : 'immediate'};
+  close(); flow = {kind:'hand',instanceId,id:d.id,step:d.card_type === 'monster' ? 'cell' : (d.card_type === 'aura' || targetEffect(d)) ? 'target' : 'immediate'};
   if (flow.step === 'immediate') return request('play-card',{cardInstanceId:instanceId,options:{}},'Carta dichiarata.');
-  await render();
-  notice(flow.step === 'cell' ? 'Scegli una cella libera della tua riga.' : 'Scegli una creatura bersaglio.','success');
+  await render(); notice(flow.step === 'cell' ? 'Scegli una cella libera della tua riga.' : 'Scegli una creatura bersaglio.','success');
 }
 function playable(d) {
   if (!active() || d.card_type === 'mostrissimo' || d.card_type === 'instant' || Number(d.mana_cost) > me().current_mana) return false;
@@ -257,9 +313,7 @@ async function drawHand() {
   for (const inst of me()?.hand ?? []) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
     try {
-      const d = await card(inst.card_id);
-      b.innerHTML = cardHTML(d,true);
-      b.disabled = !active();
+      const d = await card(inst.card_id); b.innerHTML = cardHTML(d,true); b.disabled = !active();
       if (playable(d)) b.classList.add('playable');
       b.setAttribute('aria-label',`Apri ${d.name}${playable(d) ? ', giocabile' : ''}`);
       b.onclick = () => inspect('hand',inst.card_id,{instanceId:inst.instance_id});
@@ -293,21 +347,17 @@ async function drawBoss() {
   if (p.paid.length < p.required) {
     const list = document.createElement('div'); list.className = 'tribute-list';
     for (const item of permanents()) {
-      const d = await card(item.card_id), b = document.createElement('button');
-      b.type = 'button'; b.textContent = `${item.type}: ${d.name}`; b.disabled = busy;
+      const d = await card(item.card_id), b = document.createElement('button'); b.type = 'button'; b.textContent = `${item.type}: ${d.name}`; b.disabled = busy;
       b.onclick = () => inspect('tribute',item.card_id,{instanceId:item.id}); list.append(b);
     }
     panel.append(list);
   } else {
-    const msg = document.createElement('p');
-    msg.textContent = flow?.kind === 'boss-target' ? 'Tocca il bersaglio ETB evidenziato.' : 'Tocca una cella evidenziata.';
-    panel.append(msg);
+    const msg = document.createElement('p'); msg.textContent = flow?.kind === 'boss-target' ? 'Tocca il bersaglio ETB evidenziato.' : 'Tocca una cella evidenziata.'; panel.append(msg);
   }
 }
 function controls() {
   const disable = (id,v) => { if ($(id)) $(id).disabled = !!v; };
-  disable('new-match-button',busy); disable('end-turn-button',!active());
-  disable('refresh-button',busy || !matchId); disable('direct-attack-button',true);
+  disable('new-match-button',busy); disable('end-turn-button',!active()); disable('refresh-button',busy || !matchId); disable('direct-attack-button',true);
   disable('cancel-selection-button',busy || !flow || (!!pending() && flow?.kind !== 'trap-target'));
   disable('choose-attack-button',true); disable('choose-move-button',true);
   $('creature-action-panel')?.classList.add('hidden');
@@ -342,14 +392,11 @@ async function request(path,body,message) {
   close(); busy = true; controls(); reactionDialog().classList.add('hidden');
   try {
     state = (await api(`/match/${encodeURIComponent(matchId)}/${path}`,{method:'POST',body})).state;
-    flow = null;
-    await render();
+    flow = null; await render();
     try { await logs(); } catch(e) { console.warn(e); }
     notice(state.status === 'finished' ? state.winner_index === 1 ? 'HAI VINTO!' : 'HAI PERSO!' : state.mostrissimo_result?.outcome === 'failed' ? state.mostrissimo_result.message : state.pending_reaction ? reactionDescription(state.pending_reaction.event) : message,state.mostrissimo_result?.outcome === 'failed' ? 'error' : 'success');
   } catch(e) {
     fail(e);
-    // Una richiesta puo' essere stata applicata anche se la risposta si perde.
-    // Ricaricare lo stato prima di permettere una scelta sulla vecchia finestra.
     try { state = (await api(`/match/${encodeURIComponent(matchId)}`)).state; flow = null; } catch(refreshError) { console.warn(refreshError); }
   } finally { busy = false; await render().catch(fail); }
 }
@@ -382,8 +429,7 @@ async function boardClick(pos) {
     if (c || !bossCells(p).some(x => eq(x,pos))) return notice('Cella non valida.','error');
     const d = await card(p.card_id);
     if (targetEffect(d) && targets(d).length) {
-      flow = {kind:'boss-target',position:pos,id:d.id}; await render();
-      notice('Cella scelta. Tocca il bersaglio ETB evidenziato.','success'); return;
+      flow = {kind:'boss-target',position:pos,id:d.id}; await render(); notice('Cella scelta. Tocca il bersaglio ETB evidenziato.','success'); return;
     }
     return request('mostrissimo/complete',{position:pos},'Mostrissimo dichiarato.');
   }
@@ -411,22 +457,19 @@ async function boardClick(pos) {
   if (c) return inspect('unit',c.card_id,{position:pos,cell:c});
 }
 async function newMatch() {
-  if (busy) return;
-  busy = true; controls(); notice('Creazione partita…');
+  if (busy) return; busy = true; controls(); notice('Creazione partita…');
   try {
     const result = await api('/match/create',{method:'POST',body:{}});
-    matchId = result.match_id; state = result.state; flow = null; close();
-    localStorage.setItem('bellum:last-match',matchId);
-    await render(); await logs(); notice('Partita pronta. Tocca una carta.','success');
+    matchId = result.match_id; state = result.state; flow = null; close(); closeGraveyard();
+    localStorage.setItem('bellum:last-match',matchId); await render(); await logs(); notice('Partita pronta. Tocca una carta.','success');
   } catch(e) { fail(e); }
   finally { busy = false; await render().catch(fail); }
 }
 async function refreshMatch() {
-  if (busy || !matchId) return;
-  busy = true; controls();
+  if (busy || !matchId) return; busy = true; controls();
   try {
     state = (await api(`/match/${encodeURIComponent(matchId)}`)).state;
-    flow = null; close(); await render(); await logs(); notice('Aggiornato.','success');
+    flow = null; close(); closeGraveyard(); await render(); await logs(); notice('Aggiornato.','success');
   } catch(e) { fail(e); }
   finally { busy = false; await render().catch(fail); }
 }
@@ -436,7 +479,7 @@ async function init() {
   initialized = true;
   if ($('signed-in-user')) $('signed-in-user').textContent = `@${usernameFromEmail(user.email)}`;
   if ($('player-title')) $('player-title').textContent = usernameFromEmail(user.email) || 'Tu';
-  overlay(); reactionDialog();
+  overlay(); reactionDialog(); graveyardDialog(); wireGraveyards();
   $('new-match-button')?.addEventListener('click',() => newMatch().catch(fail));
   $('cancel-selection-button')?.addEventListener('click',() => {
     if (flow?.kind === 'trap-target') { flow = null; render().catch(fail); notice('Scegli un’altra Trappola o passa.'); return; }
@@ -444,8 +487,8 @@ async function init() {
   });
   $('end-turn-button')?.addEventListener('click',() => { if (active()) request('end-turn',{},'È di nuovo il tuo turno.'); });
   $('refresh-button')?.addEventListener('click',() => refreshMatch().catch(fail));
-  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; close(); reactionDialog().classList.add('hidden'); }).catch(fail));
-  document.addEventListener('keydown',e => { if (e.key === 'Escape' && view) close(); });
+  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; close(); closeGraveyard(); reactionDialog().classList.add('hidden'); }).catch(fail));
+  document.addEventListener('keydown',e => { if (e.key === 'Escape') { if (!$('graveyard-dialog')?.classList.contains('hidden')) closeGraveyard(); else if (view) close(); } });
   await render();
   const prior = localStorage.getItem('bellum:last-match');
   if (prior) try {
