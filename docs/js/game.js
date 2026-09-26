@@ -1,5 +1,5 @@
-// js/game.js — Bellum Penumbrum, interfaccia partita v4.
-// Pubblicare solo con backend/types.ts v4, backend/engine.ts v4, SQL v4 e CSS v4.
+// js/game.js — Bellum Penumbrum, interfaccia partita v4 con Aure e Terraforme passive.
+// Pubblicare solo con backend/types.ts, backend/engine.ts e SQL passivi coordinati.
 import { getAccessToken, getCurrentUser, signOut, usernameFromEmail } from './auth.js';
 
 const API = 'https://bellum-penumbrum-api.onrender.com';
@@ -103,6 +103,15 @@ async function api(path,options={}) {
 async function card(id) {
   if (!cache.has(id)) cache.set(id,(await api(`/cards/${encodeURIComponent(id)}`)).card);
   return cache.get(id);
+}
+// Il catalogo, non il nome dell'Aura, decide il costo. Anche un'Aura nemica
+// assegnata alla nostra creatura puo' renderne gratuito il movimento.
+async function moveCost(cell) {
+  for (const aura of cell?.auras ?? []) {
+    const d = await card(aura.card_id);
+    if (effects(d).some(e => e.type === 'movement_cost' && e.duration === 'while_attached' && e.target === 'enchanted_creature' && e.amount === 0)) return 0;
+  }
+  return 1;
 }
 function button(text,fn,disabled=false) {
   const b = document.createElement('button');
@@ -239,11 +248,14 @@ async function inspect(kind,id,extra={}) {
       if (direct) return request('attack',{attackerPosition:current.position,target:{type:'player',playerIndex:0}},'Attacco dichiarato.');
       flow = {kind:'attack',from:current.position}; close(); render().catch(fail); notice('Tocca il nemico evidenziato.','success');
     });
-    add('Muovi · 1 mana',() => { flow = {kind:'move',from:current.position}; close(); render().catch(fail); notice('Tocca una cella libera adiacente.','success'); },!me()?.current_mana || !steps(current.position).length);
+    const cost = await moveCost(current.cell);
+    if (current !== view) return;
+    add(`Muovi · ${cost} mana`,() => { flow = {kind:'move',from:current.position}; close(); render().catch(fail); notice('Tocca una cella libera adiacente.','success'); },Number(me()?.current_mana ?? 0) < cost || !steps(current.position).length);
   }
   if (kind === 'unit' && isCreatureCell(current.cell) && current.cell.auras?.length) {
     for (const aura of current.cell.auras) {
       const a = await card(aura.card_id);
+      if (current !== view) return;
       add(`Aura ${a.name}${aura.owner_index === 1 ? ' · tua' : ' · IA'}`,() => { close(); return inspect('aura',aura.card_id,{instanceId:aura.instance_id}); });
     }
   }
@@ -420,7 +432,7 @@ async function boardClick(pos) {
       if (c || pos.row !== 2) return notice('Scegli una cella libera della tua riga.','error');
       flow.position = pos;
       if (d.card_type === 'monster' && targetEffect(d) && targets(d).length) { flow.step = 'target'; await render(); notice('Cella scelta. Tocca il bersaglio ETB.','success'); return; }
-      if (d.card_type === 'terraforma' && targetEffect(d) && targets(d).length) { flow.step = 'target'; await render(); notice('Cella scelta. Tocca il bersaglio dell’effetto di ingresso.','success'); return; }
+      // Le Terraforme non hanno ETB e non richiedono bersagli.
       return request('play-card',{cardInstanceId:flow.instanceId,options:{position:pos}},'Carta dichiarata.');
     }
     if (flow.step === 'target') {
