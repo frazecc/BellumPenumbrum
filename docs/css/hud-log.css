@@ -1,0 +1,22 @@
+/* Bellum Penumbrum: avvisi e cronologia nell'area Offerta. */
+.game-screen{grid-template-columns:minmax(0,1fr) minmax(150px,240px)}
+.game-screen>.arena-sidebar{grid-column:2;grid-row:2;display:flex;flex-direction:column;gap:.3rem;min-width:0;min-height:0;overflow:visible}
+.game-screen>.arena-sidebar>#mostrissimo-panel{display:flex;flex:1 1 auto;flex-direction:column;align-items:center;min-width:0;min-height:0;overflow:hidden;grid-column:auto;grid-row:auto}
+.game-screen>.arena-sidebar>.logs-panel{display:block!important;flex:0 0 auto;min-width:0;min-height:0;padding:.35rem .4rem;border-color:#796748;background:linear-gradient(145deg,#292c37,#191b24)}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure{position:relative;min-width:0}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure>summary{cursor:pointer;list-style:none;color:#f0d28f;font-size:.75rem;font-weight:800;text-align:center}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure>summary::-webkit-details-marker{display:none}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure>summary::after{content:'  ▾';color:#fff}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure[open]>summary::after{content:'  ▴'}
+.game-screen>.arena-sidebar>.logs-panel .match-logs{display:block;max-height:none;margin:.2rem 0 0;padding:0;list-style:none;overflow:hidden;color:#eee;font-size:.73rem;line-height:1.22;text-align:left}
+.game-screen>.arena-sidebar>.logs-panel .match-logs li{display:block;margin:.2rem 0;padding:.22rem .3rem;border-left:2px solid #d8ae67;border-radius:.15rem;background:#11131ba6;overflow-wrap:anywhere}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure:not([open]) .match-logs li:not(:nth-last-child(-n+2)){display:none}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure[open] .match-logs{max-height:min(55dvh,500px);overflow:auto;scrollbar-width:thin}
+.game-screen>.arena-sidebar>.logs-panel .log-disclosure[open]{position:absolute;z-index:35;right:max(.4rem,calc((100vw - 1600px)/2));bottom:5rem;width:min(340px,calc(100vw - 1rem));max-height:65dvh;overflow:auto;border:1px solid #c39c53;border-radius:.5rem;background:#1b1d28;box-shadow:0 8px 30px #000c;padding:.55rem}
+.game-screen>.arena-sidebar>.logs-panel #refresh-button{display:none}
+.game-screen>.arena-sidebar>.game-message{position:static!important;z-index:auto;left:auto;top:auto;transform:none;width:100%;min-width:0;min-height:0;margin:0;padding:.25rem .35rem;border:1px solid #6b5d45;border-radius:.35rem;background:#171822;color:#eee;font-size:.75rem;line-height:1.2;text-align:center;pointer-events:auto;overflow-wrap:anywhere}
+.game-screen>.arena-sidebar>.game-message:empty{display:none}
+.game-screen>.arena-sidebar>.game-message.error{color:#ffb1b1;border-color:#a34c52}
+.game-screen>.arena-sidebar>.game-message.success{color:#adf2c5;border-color:#4e9564}
+@media(max-width:900px){.game-screen{grid-template-columns:minmax(0,1fr) minmax(95px,130px)}.game-screen>.arena-sidebar>.logs-panel .match-logs{font-size:.65rem}.game-screen>.arena-sidebar>.game-message{font-size:.68rem}.game-screen>.arena-sidebar>.logs-panel .log-disclosure[open]{right:.3rem;bottom:4.5rem}}
+@media(max-width:560px){.game-screen{grid-template-columns:minmax(0,1fr) 80px}.game-screen>.arena-sidebar{gap:.14rem}.game-screen>.arena-sidebar>.logs-panel{padding:.18rem}.game-screen>.arena-sidebar>.logs-panel .log-disclosure>summary{font-size:.6rem}.game-screen>.arena-sidebar>.logs-panel .match-logs{font-size:.57rem}.game-screen>.arena-sidebar>.logs-panel .match-logs li{padding:.12rem;margin:.1rem 0}.game-screen>.arena-sidebar>.game-message{padding:.13rem;font-size:.6rem}.game-screen>.arena-sidebar>.logs-panel .log-disclosure[open]{right:.2rem;bottom:3.4rem;width:min(300px,calc(100vw - .4rem));padding:.4rem}.game-screen>.arena-sidebar>.logs-panel .log-disclosure[open] .match-logs{font-size:.78rem;line-height:1.35}}
