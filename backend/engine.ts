@@ -483,6 +483,7 @@ async function advanceAi(c: Context) {
   if (progress.stage === 'upkeep') { await startTurn(c, 0); progress.stage = 'actions'; if (s.status === 'running') prepend(s, { kind: 'advance_ai' }); return; }
   if (progress.stage === 'human_upkeep') { await startTurn(c, 1); delete s.ai_progress; return; }
   if (s.active_player_index !== 0) throw new Error('Cursore IA incoerente: atteso turno IA');
+  if (s.pending_mostrissimo?.player_index === 0) { await continueAiMostrissimo(c); return; }
   if (progress.stage === 'end' || progress.actions_taken >= 20) {
     expireTemporaryBuffs(s); s.phase = 'end'; log(c, 0, 'turn_end', 'L’IA termina il turno.');
     progress.stage = 'human_upkeep'; prepend(s, { kind: 'advance_ai' }); return;
