@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
-import type { AttackTarget, BoardCell, CardData, CardInstance, EffectDefinition, GameState, MatchLogEntry, PlayerIndex, PlayerState, PlayCardOptions, Position, TurnPhase } from './types.js';
+import type {
+  AiProgress, AttackTarget, BoardCell, CardData, CardEffectJson, CardInstance,
+  EffectDefinition, GameState, MatchLogEntry, PendingEvent, PendingWork,
+  PlayerIndex, PlayerState, PlayCardOptions, Position, ReactionTriggerEvent,
+  TrapChoice, TurnPhase,
+} from './types.js';
 
 const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_KEY;
@@ -15,51 +20,67 @@ const home = (p: PlayerIndex) => p === 0 ? 0 : 2;
 const allowed = (p: PlayerIndex, row: number) => row !== home(other(p));
 const phaseNumber = (p: TurnPhase) => ({ start: 0, upkeep: 1, main: 2, end: 3 })[p];
 const blank = (): GameState['board'] => ({ rows: [[null, null, null], [null, null, null], [null, null, null]] });
-const at = (s: GameState, p: Position) => s.board.rows[p.row][p.col];
+const at = (s: GameState, p: Position) => valid(p) ? s.board.rows[p.row][p.col] : null;
 const put = (s: GameState, p: Position, c: BoardCell | null) => { s.board.rows[p.row][p.col] = c; };
-const units = (s: GameState, owner: PlayerIndex) => {
+const instance = (c: BoardCell): CardInstance => ({ instance_id: c.instance_id, card_id: c.card_id });
+const effects = (raw: CardEffectJson | null): EffectDefinition[] => raw && 'effects' in raw && Array.isArray(raw.effects) ? raw.effects : raw && 'type' in raw ? [raw] : [];
+const trigger = (card: CardData) => card.effect_json?.reaction_trigger?.event;
+const keyword = (card: CardData, name: string) => {
+  const c = card as CardData & { keywords?: unknown; keyword_json?: unknown };
+  return [c.keywords, c.keyword_json].some(x => Array.isArray(x) && x.some(v => String(v).toLowerCase() === name));
+};
+function shuffle<T>(values: T[]): T[] {
+  const a = [...values];
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+function units(s: GameState, owner: PlayerIndex) {
   const result: { position: Position; cell: BoardCell }[] = [];
   for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
     const cell = s.board.rows[row][col];
     if (cell?.owner_index === owner) result.push({ position: { row, col }, cell });
   }
   return result;
-};
-const enemies = (s: GameState, p: Position, owner: PlayerIndex) => around(p).filter(q => at(s, q)?.owner_index === other(owner));
-const instance = (cell: BoardCell): CardInstance => ({ instance_id: cell.instance_id, card_id: cell.card_id });
-const effects = (raw: unknown): EffectDefinition[] => {
-  if (!raw || typeof raw !== 'object') return [];
-  const obj = raw as { effects?: unknown; type?: unknown };
-  return Array.isArray(obj.effects) ? obj.effects.filter(e => e && typeof e === 'object' && 'type' in e) as EffectDefinition[] : obj.type ? [obj as EffectDefinition] : [];
-};
-const targeted = (card: CardData) => effects(card.effect_json).some(e => e.target === 'any_creature' || e.type === 'return_hand');
-const keyword = (card: CardData, name: string) => {
-  const c = card as CardData & { keywords?: unknown; keyword_json?: unknown };
-  const raw = [c.keywords, c.keyword_json, (card.effect_json as { keywords?: unknown } | null)?.keywords];
-  return raw.some(k => Array.isArray(k) && k.some(v => String(v).toLowerCase() === name));
-};
-function shuffle<T>(values: T[]) {
-  const a = [...values];
-  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-  return a;
 }
+const enemies = (s: GameState, p: Position, owner: PlayerIndex) => around(p).filter(q => at(s, q)?.owner_index === other(owner));
+function find(s: GameState, id: string) {
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    const cell = s.board.rows[row][col];
+    if (cell?.instance_id === id) return { position: { row, col }, cell };
+  }
+  return null;
+}
+function eligible(s: GameState, owner: PlayerIndex, effect: EffectDefinition) {
+  if ((effect.type === 'damage' || effect.type === 'damage_creature') && effect.timing !== 'instant') return units(s, other(owner));
+  if (effect.type === 'heal' && effect.timing !== 'instant') return units(s, owner);
+  return [...units(s, 0), ...units(s, 1)];
+}
+function target(s: GameState, owner: PlayerIndex, effect: EffectDefinition, id: string | null) {
+  const found = id ? find(s, id) : null;
+  return found && eligible(s, owner, effect).some(x => x.cell.instance_id === id) ? found : null;
+}
+function prepend(s: GameState, ...steps: PendingWork[]) { s.work_queue.unshift(...steps); }
 async function load(id: string): Promise<GameState> {
-  const { data, error } = await db.from('game_state').select('state_json').eq('match_id', id).single();
+  const { data, error } = await db.from('game_state').select('state_json,revision').eq('match_id', id).single();
   if (error || !data) throw new Error(`Stato partita non trovato: ${error?.message ?? id}`);
   const s = data.state_json as GameState;
-  if (s.state_version !== 2 || !s.board?.rows) throw new Error('Partita precedente non compatibile: avvia una nuova partita.');
+  if (s.state_version !== 3 || !s.board?.rows || !Array.isArray(s.work_queue)) throw new Error('Partita precedente non compatibile: avvia una nuova partita.');
+  if (Number(data.revision) !== s.state_revision) throw new Error('Revisione dello stato non coerente');
   return s;
 }
-export async function saveGameState(id: string, s: GameState) {
-  const { error } = await db.from('game_state').update({ state_json: s, current_turn: s.current_turn, current_phase: phaseNumber(s.phase), last_updated: new Date().toISOString() }).eq('match_id', id);
+async function commit(id: string, s: GameState, logs: MatchLogEntry[]): Promise<GameState> {
+  const { data, error } = await db.rpc('commit_match_state', {
+    p_match_id: id, p_expected_revision: s.state_revision,
+    p_next_state: s, p_log_entries: logs,
+  });
   if (error) throw new Error(`Salvataggio partita: ${error.message}`);
+  return data as GameState;
 }
-export async function logMatchAction(id: string, entry: MatchLogEntry) {
+export async function saveGameState(id: string, s: GameState): Promise<GameState> { return commit(id, s, []); }
+// Compatibilita' con l'interfaccia precedente; le azioni usano SOLO commit().
+export async function logMatchAction(id: string, entry: MatchLogEntry): Promise<void> {
   const { error } = await db.from('match_logs').insert({ match_id: id, log_data: entry });
   if (error) throw new Error(`Log partita: ${error.message}`);
-}
-async function log(id: string, s: GameState, owner: number, action: string, description: string, extra: Partial<MatchLogEntry> = {}) {
-  await logMatchAction(id, { turn: s.current_turn, phase: s.phase, player_index: owner, action_type: action, description, ...extra });
 }
 export async function getCardData(id: string): Promise<CardData> {
   const { data, error } = await db.from('cards').select('id,name,faction_id,card_type,mana_cost,sacrifice_cost,attack,hp,subtype,rarity,effect_text,effect_json,effect_on_death_json,flavor_text,image_url,factions!left(code)').eq('id', id).single();
@@ -67,187 +88,470 @@ export async function getCardData(id: string): Promise<CardData> {
   const f = Array.isArray(data.factions) ? data.factions[0] : data.factions;
   return { ...data, faction_code: f && typeof f === 'object' && 'code' in f ? String(f.code) : 'IND' } as CardData;
 }
-function locate(s: GameState, id: string) {
-  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
-    const cell = s.board.rows[row][col];
-    if (cell?.instance_id === id) return { position: { row, col }, cell };
-  }
-  throw new Error('Creatura bersaglio non presente sulla plancia');
+
+type Context = { id: string; s: GameState; logs: MatchLogEntry[] };
+function log(c: Context, owner: number, action: string, description: string, extra: Partial<MatchLogEntry> = {}) {
+  c.logs.push({ turn: c.s.current_turn, phase: c.s.phase, player_index: owner, action_type: action, description, ...extra });
 }
-function eligible(s: GameState, owner: PlayerIndex, effect: EffectDefinition) {
-  if ((effect.type === 'damage' || effect.type === 'damage_creature') && effect.timing !== 'instant') return units(s, other(owner));
-  if (effect.type === 'heal' && effect.timing !== 'instant') return units(s, owner);
-  return [...units(s, 0), ...units(s, 1)];
-}
-function chosenTarget(s: GameState, owner: PlayerIndex, effect: EffectDefinition, id: string | null) {
-  if (!id) return null;
-  const selected = locate(s, id);
-  if (!eligible(s, owner, effect).some(x => x.cell.instance_id === id)) throw new Error('Bersaglio non valido per questo effetto');
-  return selected;
-}
-async function clearLoop(id: string, s: GameState) {
-  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
-    const cell = s.board.rows[row][col];
-    if (cell) { s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras); s.board.rows[row][col] = null; }
-  }
-  for (const p of s.players) { if (p.field_spell) p.graveyard.push(p.field_spell); p.field_spell = null; }
-  await log(id, s, -1, 'anti_loop_cleanup', 'La Penombra divora ogni cosa: venti trigger consecutivi, plancia svuotata.');
-}
-async function destroy(id: string, s: GameState, p: Position, killer: PlayerIndex) {
-  const cell = at(s, p);
-  if (!cell) return;
-  put(s, p, null);
-  s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras);
-  const card = await getCardData(cell.card_id);
-  await log(id, s, cell.owner_index, 'creature_destroyed', `${card.name} viene distrutto.`, { card_id: card.id, instance_id: cell.instance_id, position: p });
-  for (const effect of effects(card.effect_on_death_json)) {
-    s.anti_loop_counter++;
-    if (s.anti_loop_counter > 20) { await clearLoop(id, s); return; }
-    await resolve(id, s, cell.owner_index, killer, card, effect, null, false);
-  }
-}
-async function finish(id: string, s: GameState, winner: PlayerIndex, reason: string) {
-  if (s.status === 'finished') return;
-  s.status = 'finished'; s.phase = 'end'; s.winner_index = winner;
-  const { error } = await db.from('matches').update({ player_won: winner === 1, turns_count: s.current_turn }).eq('id', id);
-  if (error) throw new Error(`Chiusura partita: ${error.message}`);
-  await saveGameState(id, s);
-  await log(id, s, winner, 'match_end', `${winner === 1 ? 'Hai vinto' : 'L’IA ha vinto'}. ${reason}`);
-}
-function winner(s: GameState): PlayerIndex | null {
+function won(s: GameState): PlayerIndex | null {
   if (s.players[0].life <= 0) return 1;
   if (s.players[1].life <= 0) return 0;
   return null;
 }
-async function draw(id: string, s: GameState, recipient: PlayerIndex, amount: number): Promise<number> {
-  let taken = 0;
-  for (let i = 0; i < amount; i++) {
-    const next = s.players[recipient].deck.shift();
-    if (next) { s.players[recipient].hand.push(next); taken++; }
+function checkWinner(c: Context, reason: string) {
+  const winner = won(c.s);
+  if (winner === null || c.s.status === 'finished') return;
+  c.s.status = 'finished'; c.s.phase = 'end'; c.s.winner_index = winner;
+  c.s.pending_reaction = undefined; c.s.work_queue = []; delete c.s.ai_progress;
+  log(c, winner, 'match_end', `${winner === 1 ? 'Hai vinto' : 'L’IA ha vinto'}. ${reason}`);
+}
+function draw(c: Context, recipient: PlayerIndex, amount: number) {
+  let count = 0;
+  for (let n = 0; n < amount; n++) {
+    const card = c.s.players[recipient].deck.shift();
+    if (card) { c.s.players[recipient].hand.push(card); count++; }
     else {
-      s.players[recipient].life -= 2;
-      await log(id, s, recipient, 'empty_draw_damage', `${label(recipient)} ${recipient === 1 ? 'dovresti pescare' : 'dovrebbe pescare'}, ma il mazzo è vuoto: subisce 2 danni (${Math.max(0, s.players[recipient].life)} PV rimasti).`, { amount: 2 });
-      if (s.players[recipient].life <= 0) break;
+      c.s.players[recipient].life -= 2;
+      log(c, recipient, 'empty_draw_damage', `${label(recipient)} subisce 2 danni per una pesca a mazzo vuoto.`, { amount: 2 });
+      checkWinner(c, 'PV esauriti dopo una pesca impossibile.');
+      if (c.s.status === 'finished') break;
     }
   }
-  return taken;
+  return count;
 }
-type Context = { id: string; state: GameState; owner: PlayerIndex; opponent: PlayerIndex; card: CardData; effect: EffectDefinition; amount: number; targetId: string | null };
-async function effectDraw(c: Context) {
-  const recipient = c.effect.target === 'opponent' ? c.opponent : c.owner;
-  const count = await draw(c.id, c.state, recipient, c.amount);
-  await log(c.id, c.state, c.owner, 'effect_draw', `${c.card.name}: ${recipient === 1 ? 'peschi' : 'l’IA pesca'} ${count} carta/e su ${c.amount} richiesta/e.`);
-}
-async function effectDiscard(c: Context) {
-  const recipient = c.effect.target === 'self' ? c.owner : c.opponent;
-  let count = 0;
-  while (count < c.amount && c.state.players[recipient].hand.length) {
-    const index = Math.floor(Math.random() * c.state.players[recipient].hand.length);
-    c.state.players[recipient].graveyard.push(c.state.players[recipient].hand.splice(index, 1)[0]); count++;
+function cleanupLoop(c: Context) {
+  for (const owner of [0, 1] as const) for (const { position, cell } of units(c.s, owner)) {
+    c.s.players[owner].graveyard.push(instance(cell), ...cell.auras); put(c.s, position, null);
   }
-  await log(c.id, c.state, c.owner, 'effect_discard', `${c.card.name}: ${label(recipient)} scarta ${count} carta/e.`);
+  for (const p of c.s.players) { if (p.field_spell) p.graveyard.push(p.field_spell); p.field_spell = null; }
+  c.s.work_queue = c.s.work_queue.filter(step => step.kind !== 'resolve_effect');
+  c.s.anti_loop_counter = 0;
+  log(c, -1, 'anti_loop_cleanup', 'La Penombra divora ogni cosa: venti trigger consecutivi, plancia svuotata.');
 }
-async function effectHeal(c: Context) {
-  const target = c.effect.target ?? 'self';
-  if (target === 'any_creature') {
-    const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)?.cell;
-    if (!selected) throw new Error('Seleziona una creatura da curare');
-    selected.hp = Math.min(selected.max_hp, selected.hp + c.amount);
-  } else if (target.startsWith('all_creatures')) {
-    const owners = target === 'all_creatures_opponent' ? [c.opponent] : [c.owner];
-    for (const p of owners) for (const { cell } of units(c.state, p)) cell.hp = Math.min(cell.max_hp, cell.hp + c.amount);
-  } else c.state.players[target === 'opponent' ? c.opponent : c.owner].life += c.amount;
-  await log(c.id, c.state, c.owner, 'effect_heal', `${c.card.name}: cura ${c.amount}.`);
+async function destroy(c: Context, position: Position, killer: PlayerIndex) {
+  const cell = at(c.s, position);
+  if (!cell) return;
+  put(c.s, position, null);
+  c.s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras);
+  const card = await getCardData(cell.card_id);
+  log(c, cell.owner_index, 'creature_destroyed', `${card.name} viene distrutto.`, { card_id: card.id, instance_id: cell.instance_id, position });
+  const steps: PendingWork[] = effects(card.effect_on_death_json).map((_, effect_index) => ({
+    kind: 'resolve_effect', owner: cell.owner_index, card_id: card.id,
+    source_instance_id: cell.instance_id, source: 'on_death', effect_index,
+    target_instance_id: null, require_source_on_board: false,
+  }));
+  prepend(c.s, ...steps);
+  void killer;
 }
-async function effectDamage(c: Context) {
-  if (c.effect.target === 'all_creatures') {
-    const snapshot = [...units(c.state, 0), ...units(c.state, 1)];
-    for (const { position, cell } of snapshot) if (at(c.state, position)?.instance_id === cell.instance_id) cell.hp -= c.amount;
-    await log(c.id, c.state, c.owner, 'effect_damage_all', `${c.card.name}: ${c.amount} danno/i a tutte le creature.`);
-    for (const { position, cell } of snapshot) if (at(c.state, position)?.instance_id === cell.instance_id && cell.hp <= 0) await destroy(c.id, c.state, position, c.owner);
+async function applyEffect(c: Context, task: Extract<PendingWork, { kind: 'resolve_effect' }>) {
+  const s = c.s;
+  if (task.require_source_on_board && (!task.source_instance_id || !find(s, task.source_instance_id))) {
+    log(c, task.owner, 'etb_source_gone', 'L’effetto ETB non si risolve: la creatura non è più sul campo.');
     return;
   }
-  if (c.effect.target !== 'any_creature' || !c.targetId) throw new Error('Seleziona una creatura bersaglio');
-  const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)!;
-  selected.cell.hp -= c.amount;
-  await log(c.id, c.state, c.owner, 'effect_damage', `${c.card.name}: infligge ${c.amount} danno/i a una creatura.`, { target_instance_id: c.targetId });
-  if (selected.cell.hp <= 0) await destroy(c.id, c.state, selected.position, c.owner);
-}
-async function effectReturnHand(c: Context) {
-  if (!c.targetId) throw new Error('Seleziona una creatura bersaglio');
-  const { cell, position } = chosenTarget(c.state, c.owner, c.effect, c.targetId)!;
-  put(c.state, position, null);
-  c.state.players[cell.owner_index].hand.push(instance(cell));
-  c.state.players[cell.owner_index].graveyard.push(...cell.auras);
-  await log(c.id, c.state, c.owner, 'effect_return_hand', `${c.card.name}: una creatura torna in mano.`);
-}
-async function effectBuff(c: Context) {
-  const detail = c.effect as EffectDefinition & { stat?: string; duration?: string };
-  if (c.effect.target === 'all_creatures' && detail.stat === 'hp' && detail.duration === 'permanent') {
-    for (const { cell } of units(c.state, c.owner)) { cell.max_hp += c.amount; cell.hp += c.amount; }
-    await log(c.id, c.state, c.owner, 'effect_buff', `${c.card.name}: tutte le tue creature guadagnano ${c.amount} HP permanenti.`);
-    return;
-  }
-  if (c.effect.target !== 'any_creature' || !c.targetId) throw new Error('Seleziona una creatura da potenziare');
-  const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)!.cell as BoardCell & { temp_attack?: number };
-  if (detail.stat === 'hp' && detail.duration === 'permanent') { selected.max_hp += c.amount; selected.hp += c.amount; }
-  else if (detail.stat === 'attack' && (detail.duration === 'turn' || detail.duration === 'permanent')) {
-    selected.attack += c.amount;
-    if (detail.duration === 'turn') selected.temp_attack = (selected.temp_attack ?? 0) + c.amount;
-  } else throw new Error('Potenziamento non supportato');
-  await log(c.id, c.state, c.owner, 'effect_buff', `${c.card.name}: +${c.amount} ${detail.stat === 'hp' ? 'HP permanenti' : detail.duration === 'turn' ? 'attacco fino a fine turno' : 'attacco permanente'}.`);
-}
-function expireTemporaryBuffs(s: GameState) {
-  for (const owner of [0, 1] as const) for (const { cell } of units(s, owner)) {
-    const buffed = cell as BoardCell & { temp_attack?: number };
-    if (buffed.temp_attack) { buffed.attack -= buffed.temp_attack; delete buffed.temp_attack; }
-  }
-}
-async function resolve(id: string, s: GameState, owner: PlayerIndex, opponent: PlayerIndex, card: CardData, effect: EffectDefinition, targetId: string | null, etb: boolean) {
-  const amount = Number(effect.amount ?? 1);
+  const card = await getCardData(task.card_id);
+  const list = effects(task.source === 'on_death' ? card.effect_on_death_json : card.effect_json);
+  const effect = list[task.effect_index];
+  if (!effect) return;
+  s.anti_loop_counter++;
+  if (s.anti_loop_counter > 20) { cleanupLoop(c); return; }
+  const owner = task.owner, opponent = other(owner), amount = Number(effect.amount ?? 1);
   if (!Number.isInteger(amount) || amount < 0 || amount > 20) throw new Error('Quantità effetto non valida');
-  if (effect.target === 'any_creature' || effect.type === 'return_hand') {
-    const available = eligible(s, owner, effect);
-    if (etb && available.length === 0) {
-      await log(id, s, owner, 'etb_no_target', `${card.name} entra in campo: nessun bersaglio valido, l’effetto ETB non si attiva.`, { card_id: card.id });
+  const chosen = effect.target === 'any_creature' || effect.type === 'return_hand'
+    ? target(s, owner, effect, task.target_instance_id) : null;
+  if ((effect.target === 'any_creature' || effect.type === 'return_hand') && !chosen) {
+    log(c, owner, 'effect_no_target', `${card.name}: bersaglio non più valido, effetto annullato.`, { card_id: card.id });
+    return;
+  }
+  if (effect.type === 'draw') {
+    const recipient = effect.target === 'opponent' ? opponent : owner;
+    const count = draw(c, recipient, amount);
+    log(c, owner, 'effect_draw', `${card.name}: ${label(recipient)} pesca ${count} carta/e.`, { amount: count });
+  } else if (effect.type === 'discard') {
+    const recipient = effect.target === 'self' ? owner : opponent;
+    let count = 0;
+    while (count < amount && s.players[recipient].hand.length) {
+      const i = Math.floor(Math.random() * s.players[recipient].hand.length);
+      s.players[recipient].graveyard.push(s.players[recipient].hand.splice(i, 1)[0]); count++;
+    }
+    log(c, owner, 'effect_discard', `${card.name}: ${label(recipient)} scarta ${count} carta/e.`);
+  } else if (effect.type === 'heal') {
+    if (effect.target === 'any_creature') chosen!.cell.hp = Math.min(chosen!.cell.max_hp, chosen!.cell.hp + amount);
+    else if (effect.target?.startsWith('all_creatures')) {
+      const owners = effect.target === 'all_creatures' ? [0, 1] as const : [effect.target === 'all_creatures_opponent' ? opponent : owner];
+      for (const p of owners) for (const { cell } of units(s, p)) cell.hp = Math.min(cell.max_hp, cell.hp + amount);
+    } else s.players[effect.target === 'opponent' ? opponent : owner].life += amount;
+    log(c, owner, 'effect_heal', `${card.name}: cura ${amount}.`);
+  } else if (effect.type === 'damage' || effect.type === 'damage_creature') {
+    if (effect.target === 'all_creatures' || effect.target === 'all_creatures_self' || effect.target === 'all_creatures_opponent') {
+      const owners = effect.target === 'all_creatures' ? [0, 1] as const : [effect.target === 'all_creatures_self' ? owner : opponent];
+      const snapshot = owners.flatMap(p => units(s, p));
+      for (const { cell } of snapshot) cell.hp -= amount;
+      log(c, owner, 'effect_damage_all', `${card.name}: ${amount} danno/i alle creature.`);
+      for (const { position, cell } of snapshot) if (at(s, position)?.instance_id === cell.instance_id && cell.hp <= 0) await destroy(c, position, owner);
+    } else if (chosen) {
+      chosen.cell.hp -= amount;
+      log(c, owner, 'effect_damage', `${card.name}: ${amount} danno/i a una creatura.`, { target_instance_id: chosen.cell.instance_id });
+      if (chosen.cell.hp <= 0) await destroy(c, chosen.position, owner);
+    } else throw new Error('Effetto danno senza bersaglio supportato');
+  } else if (effect.type === 'return_hand') {
+    const { cell, position } = chosen!;
+    put(s, position, null); s.players[cell.owner_index].hand.push(instance(cell));
+    s.players[cell.owner_index].graveyard.push(...cell.auras);
+    log(c, owner, 'effect_return_hand', `${card.name}: una creatura torna in mano.`, { target_instance_id: cell.instance_id });
+  } else if (effect.type === 'buff') {
+    const targets = effect.target === 'all_creatures' ? units(s, owner).map(x => x.cell) : chosen ? [chosen.cell] : [];
+    for (const cell of targets) {
+      if (effect.stat === 'hp' && effect.duration === 'permanent') { cell.max_hp += amount; cell.hp += amount; }
+      else if (effect.stat === 'attack' && (effect.duration === 'turn' || effect.duration === 'permanent')) {
+        cell.attack += amount;
+        if (effect.duration === 'turn') cell.temp_attack = (cell.temp_attack ?? 0) + amount;
+      } else throw new Error('Potenziamento non supportato');
+    }
+    log(c, owner, 'effect_buff', `${card.name}: potenziamento +${amount}.`);
+  } else if (effect.type === 'counter') {
+    throw new Error('Contromagia si risolve solo nella finestra reattiva');
+  } else throw new Error(`${card.name}: effetto ${effect.type} non ancora implementato.`);
+  checkWinner(c, 'PV esauriti dopo un effetto.');
+}
+function eventTrigger(event: PendingEvent): ReactionTriggerEvent {
+  if (event.kind === 'hand_card') return 'opponent_hand_card';
+  if (event.kind === 'mostrissimo_before_entry') return 'mostrissimo_before_entry';
+  if (event.kind === 'monster_etb') return 'monster_etb';
+  return 'opponent_action';
+}
+function matchesTrigger(t: ReactionTriggerEvent | undefined, event: PendingEvent) {
+  return t === 'opponent_action' || t === eventTrigger(event);
+}
+function legalPositions(s: GameState, p: PlayerIndex, freed: Position[]): Position[] {
+  const positions: Position[] = [];
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    const pos = { row, col };
+    if (!at(s, pos) && (row === home(p) || (allowed(p, row) && freed.some(q => q.row === row && q.col === col)))) positions.push(pos);
+  }
+  return positions;
+}
+function permanents(s: GameState, p: PlayerIndex) {
+  const list: { id: string; card_id: string; kind: 'creature' | 'aura' | 'field'; position?: Position }[] = [];
+  for (const { position, cell } of units(s, p)) {
+    list.push({ id: cell.instance_id, card_id: cell.card_id, kind: 'creature', position });
+    for (const aura of cell.auras) list.push({ id: aura.instance_id, card_id: aura.card_id, kind: 'aura', position });
+  }
+  const field = s.players[p].field_spell;
+  if (field) list.push({ id: field.instance_id, card_id: field.card_id, kind: 'field' });
+  return list;
+}
+function failSummon(c: Context, message: string) {
+  delete c.s.pending_mostrissimo;
+  c.s.mostrissimo_result = { outcome: 'failed', message };
+  log(c, -1, 'mostrissimo_failed', message);
+}
+function queueOnPlay(s: GameState, owner: PlayerIndex, card: CardData, sourceId: string, targetId: string | null, creature: boolean) {
+  const list = effects(card.effect_json);
+  const steps: PendingWork[] = list.map((effect, effect_index) => creature ? {
+    kind: 'declare_event', event: {
+      kind: 'monster_etb', actor: owner, source_instance_id: sourceId,
+      card_id: card.id, effect_index, target_instance_id: targetId ?? (effect.type === 'heal' && effect.target === 'any_creature' && units(s, owner).length === 1 ? sourceId : null),
+    },
+  } : {
+    kind: 'resolve_effect', owner, card_id: card.id, source_instance_id: sourceId,
+    source: 'on_play', effect_index, target_instance_id: targetId,
+    require_source_on_board: false,
+  });
+  if (creature && s.pending_mostrissimo?.offered_instance_id === sourceId) steps.push({ kind: 'finish_mostrissimo', actor: owner, card_id: card.id });
+  prepend(s, ...steps);
+}
+async function applyEvent(c: Context, e: PendingEvent) {
+  const s = c.s, p = e.actor;
+  if (s.status !== 'running') return;
+  if (e.kind === 'hand_card') {
+    const card = await getCardData(e.card_id);
+    const paid = s.players[p].graveyard.find(x => x.instance_id === e.instance_id);
+    if (!paid) { log(c, p, 'event_cancelled', `${card.name}: carta dichiarata non più disponibile.`); return; }
+    if (card.card_type === 'monster') {
+      if (!e.options.position || !valid(e.options.position) || e.options.position.row !== home(p) || at(s, e.options.position)) {
+        log(c, p, 'event_cancelled', `${card.name}: cella di evocazione non più libera.`); return;
+      }
+      s.players[p].graveyard = s.players[p].graveyard.filter(x => x.instance_id !== paid.instance_id);
+      put(s, e.options.position, { instance_id: paid.instance_id, card_id: paid.card_id, owner_index: p, attack: Number(card.attack ?? 0), hp: Number(card.hp ?? 1), max_hp: Number(card.hp ?? 1), tired: !keyword(card, 'iperattivo'), auras: [] });
+    } else if (card.card_type === 'terraforma') {
+      if (s.players[p].field_spell) { log(c, p, 'event_cancelled', `${card.name}: Terraforma già attiva.`); return; }
+      s.players[p].graveyard = s.players[p].graveyard.filter(x => x.instance_id !== paid.instance_id);
+      s.players[p].field_spell = paid;
+    } else if (card.card_type === 'aura') {
+      const selected = e.options.targetInstanceId ? find(s, e.options.targetInstanceId) : null;
+      if (!selected || selected.cell.owner_index !== p) { log(c, p, 'event_cancelled', `${card.name}: bersaglio Aura non più valido.`); return; }
+      s.players[p].graveyard = s.players[p].graveyard.filter(x => x.instance_id !== paid.instance_id);
+      selected.cell.auras.push(paid);
+    } else if (card.card_type !== 'sorcery') {
+      log(c, p, 'event_cancelled', `${card.name}: tipo di carta non giocabile in questa fase.`);
       return;
     }
-    if (!targetId) throw new Error('Seleziona un bersaglio valido per l’effetto');
-    chosenTarget(s, owner, effect, targetId);
+    s.players[p].color_counters[card.faction_code] = (s.players[p].color_counters[card.faction_code] ?? 0) + 1;
+    log(c, p, 'play_card', `${label(p)} ${p === 1 ? 'giochi' : 'gioca'} ${card.name}.`, { card_id: card.id, instance_id: paid.instance_id, position: e.options.position ?? null });
+    queueOnPlay(s, p, card, paid.instance_id, e.options.targetInstanceId ?? null, card.card_type === 'monster');
+  } else if (e.kind === 'move') {
+    const creature = at(s, e.from);
+    if (!creature || creature.instance_id !== e.instance_id || creature.owner_index !== p || creature.tired || !valid(e.to) || !adjacent(e.from, e.to) || !allowed(p, e.to.row) || at(s, e.to)) {
+      log(c, p, 'event_cancelled', 'Movimento annullato: creatura o destinazione non più valida.'); return;
+    }
+    put(s, e.from, null); put(s, e.to, creature);
+    log(c, p, 'move_creature', `${label(p)} muove una creatura spendendo 1 mana. Rimane pronta.`, { instance_id: creature.instance_id, from_position: e.from, to_position: e.to });
+  } else if (e.kind === 'attack') {
+    const attacker = at(s, e.from);
+    if (!attacker || attacker.instance_id !== e.instance_id || attacker.owner_index !== p || attacker.tired) {
+      log(c, p, 'event_cancelled', 'Attacco annullato: attaccante non più valido.'); return;
+    }
+    if (e.target.type === 'creature') {
+      const victim = at(s, e.target.position);
+      if (!victim || victim.instance_id !== e.target_instance_id || victim.owner_index !== other(p) || !adjacent(e.from, e.target.position)) {
+        log(c, p, 'event_cancelled', 'Attacco annullato: bersaglio non più valido.'); return;
+      }
+      victim.hp -= attacker.attack; attacker.tired = true;
+      log(c, p, 'attack_creature', `${label(p)} attacca: ${attacker.attack} danno/i a una creatura.`, { instance_id: attacker.instance_id, target_instance_id: victim.instance_id, position: e.from });
+      if (victim.hp <= 0) await destroy(c, e.target.position, p);
+    } else {
+      if (e.target.playerIndex !== other(p) || enemies(s, e.from, p).length) {
+        log(c, p, 'event_cancelled', 'Attacco diretto annullato: ci sono bersagli validi.'); return;
+      }
+      s.players[other(p)].life -= attacker.attack; attacker.tired = true;
+      log(c, p, 'attack_player', `${label(p)} attacca direttamente: ${attacker.attack} danno/i.`, { instance_id: attacker.instance_id, position: e.from, target_player_index: other(p) });
+      checkWinner(c, 'PV esauriti.');
+    }
+  } else if (e.kind === 'mostrissimo_sacrifice') {
+    const pending = s.pending_mostrissimo;
+    if (!pending || pending.player_index !== p || pending.stage !== 'paying' || pending.paid.length >= pending.required) return;
+    const selected = permanents(s, p).find(x => x.id === e.instance_id);
+    if (!selected) { if (permanents(s, p).length < pending.required - pending.paid.length) failSummon(c, 'Evocazione fallita: sacrifici insufficienti.'); return; }
+    if (selected.kind === 'field') { const field = s.players[p].field_spell!; s.players[p].field_spell = null; s.players[p].graveyard.push(field); }
+    else if (selected.kind === 'aura') {
+      const cell = at(s, selected.position!)!;
+      const i = cell.auras.findIndex(a => a.instance_id === selected.id);
+      s.players[p].graveyard.push(cell.auras.splice(i, 1)[0]);
+    } else { pending.freed_positions.push(selected.position!); await destroy(c, selected.position!, p); }
+    pending.paid.push(selected.id);
+    log(c, p, 'mostrissimo_sacrifice', `Sacrificio ${pending.paid.length}/${pending.required}: ${selected.kind}.`, { instance_id: selected.id, position: selected.position ?? null });
+    if (permanents(s, p).length < pending.required - pending.paid.length) failSummon(c, 'Evocazione fallita: sacrifici insufficienti dopo la reazione.');
+    else if (pending.paid.length === pending.required && !legalPositions(s, p, pending.freed_positions).length) failSummon(c, 'Evocazione fallita: nessuna cella legale.');
+  } else if (e.kind === 'mostrissimo_before_entry') {
+    const pending = s.pending_mostrissimo;
+    const offered = s.shared_mostrissimi.find(x => x.instance_id === e.offered_instance_id);
+    if (!pending || pending.stage !== 'before_entry' || pending.card_id !== e.card_id || pending.player_index !== p || pending.paid.length !== pending.required || !offered || !legalPositions(s, p, pending.freed_positions).some(q => q.row === e.position.row && q.col === e.position.col)) {
+      failSummon(c, 'Evocazione fallita: costo, offerta o cella non più validi.'); return;
+    }
+    const card = await getCardData(e.card_id);
+    s.shared_mostrissimi = s.shared_mostrissimi.filter(x => x.instance_id !== offered.instance_id);
+    s.used_mostrissimi.push(card.id);
+    const replacement = s.remaining_mostrissimi.shift();
+    if (replacement) s.shared_mostrissimi.push({ instance_id: randomUUID(), card_id: replacement });
+    put(s, e.position, { instance_id: offered.instance_id, card_id: card.id, owner_index: p, attack: Number(card.attack ?? 0), hp: Number(card.hp ?? 1), max_hp: Number(card.hp ?? 1), tired: !keyword(card, 'iperattivo'), auras: [] });
+    s.players[p].color_counters[card.faction_code] = (s.players[p].color_counters[card.faction_code] ?? 0) + 1;
+    pending.stage = 'etb'; pending.position = e.position; pending.target_instance_id = e.target_instance_id;
+    s.mostrissimo_result = { outcome: 'summoned', message: `${card.name} è stato evocato.` };
+    log(c, p, 'mostrissimo_summoned', `${label(p)} evoca ${card.name}.`, { card_id: card.id, instance_id: offered.instance_id, position: e.position });
+    queueOnPlay(s, p, card, offered.instance_id, e.target_instance_id, true);
+    if (!effects(card.effect_json).length) delete s.pending_mostrissimo;
+  } else if (e.kind === 'monster_etb') {
+    if (!find(s, e.source_instance_id)) {
+      log(c, p, 'etb_source_gone', 'L’effetto ETB salta: la creatura non è più sul campo.'); return;
+    }
+    prepend(s, { kind: 'resolve_effect', owner: p, card_id: e.card_id, source_instance_id: e.source_instance_id, source: 'on_play', effect_index: e.effect_index, target_instance_id: e.target_instance_id, require_source_on_board: true });
   }
-  const context: Context = { id, state: s, owner, opponent, card, effect, amount, targetId };
-  if (effect.type === 'draw') await effectDraw(context);
-  else if (effect.type === 'discard') await effectDiscard(context);
-  else if (effect.type === 'heal') await effectHeal(context);
-  else if (effect.type === 'damage' || effect.type === 'damage_creature') await effectDamage(context);
-  else if (effect.type === 'return_hand') await effectReturnHand(context);
-  else if (effect.type === 'buff') await effectBuff(context);
-  else throw new Error(`${card.name}: effetto ${effect.type} non ancora implementato.`);
+}
+async function validTraps(c: Context, e: PendingEvent): Promise<CardInstance[]> {
+  const responder = other(e.actor);
+  const mana = c.s.players[responder].current_mana;
+  const cards: CardInstance[] = [];
+  for (const inst of c.s.players[responder].hand) {
+    const card = await getCardData(inst.card_id);
+    if (card.card_type !== 'instant' || Number(card.mana_cost) > mana || !matchesTrigger(trigger(card), e)) continue;
+    const list = effects(card.effect_json);
+    if (!list.length || list.some(x => !['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff', 'counter'].includes(x.type))) continue;
+    if (list.some(x => x.type === 'counter') && e.kind !== 'hand_card' && trigger(card) !== 'mostrissimo_before_entry') continue;
+    if (list.some(x => x.target === 'any_creature' || x.type === 'return_hand') && !list.every(x => x.target !== 'any_creature' && x.type !== 'return_hand' || eligible(c.s, responder, x).length > 0)) continue;
+    cards.push(inst);
+  }
+  return cards;
+}
+function aiTrapTarget(s: GameState, card: CardData): string | null {
+  const effect = effects(card.effect_json).find(x => x.target === 'any_creature' || x.type === 'return_hand');
+  if (!effect) return null;
+  const options = eligible(s, 0, effect);
+  const enemy = options.filter(x => x.cell.owner_index === 1);
+  const friend = options.filter(x => x.cell.owner_index === 0);
+  if (effect.type === 'heal' || effect.type === 'buff') return friend.sort((a, b) => effect.type === 'heal' ? (b.cell.max_hp - b.cell.hp) - (a.cell.max_hp - a.cell.hp) : b.cell.attack - a.cell.attack)[0]?.cell.instance_id ?? null;
+  return enemy.sort((a, b) => effect.type === 'return_hand' ? b.cell.attack - a.cell.attack : a.cell.hp - b.cell.hp)[0]?.cell.instance_id ?? null;
+}
+async function playTrap(c: Context, e: PendingEvent, trapId: string, targetId: string | null) {
+  const p = other(e.actor), owner = c.s.players[p];
+  const i = owner.hand.findIndex(x => x.instance_id === trapId);
+  if (i < 0) throw new Error('Trappola non più in mano');
+  const card = await getCardData(owner.hand[i].card_id);
+  if (card.card_type !== 'instant' || !matchesTrigger(trigger(card), e) || owner.current_mana < card.mana_cost) throw new Error('Trappola non giocabile in questa finestra');
+  const list = effects(card.effect_json);
+  for (const effect of list) if (effect.target === 'any_creature' || effect.type === 'return_hand') {
+    if (!target(c.s, p, effect, targetId)) throw new Error('Bersaglio della Trappola non valido');
+  }
+  const isCounter = list.some(x => x.type === 'counter');
+  if (isCounter && e.kind !== 'hand_card' && !(e.kind === 'mostrissimo_before_entry' && trigger(card) === 'mostrissimo_before_entry')) throw new Error('Questo evento non può essere contrastato');
+  owner.current_mana -= card.mana_cost;
+  owner.graveyard.push(owner.hand.splice(i, 1)[0]);
+  owner.color_counters[card.faction_code] = (owner.color_counters[card.faction_code] ?? 0) + 1;
+  log(c, p, 'trap_played', `${label(p)} gioca ${card.name} in risposta a un’azione.`, { card_id: card.id, instance_id: trapId });
+  if (isCounter) {
+    if (e.kind === 'mostrissimo_before_entry') failSummon(c, `${card.name} contrasta l’evocazione; i sacrifici restano pagati.`);
+    log(c, p, 'event_countered', `${card.name} contrasta l’evento dichiarato.`);
+  } else {
+    prepend(c.s, ...list.map((_, effect_index): PendingWork => ({ kind: 'resolve_effect', owner: p, card_id: card.id, source_instance_id: trapId, source: 'trap', effect_index, target_instance_id: targetId, require_source_on_board: false })), { kind: 'apply_event', event: e });
+  }
+}
+async function declare(c: Context, e: PendingEvent) {
+  const found = await validTraps(c, e);
+  if (!found.length) { prepend(c.s, { kind: 'apply_event', event: e }); return; }
+  const responder = other(e.actor);
+  if (responder === 0) {
+    // Valuta guadagno immediato invece di spendere automaticamente ogni Trappola.
+    const evaluated = await Promise.all(found.map(async inst => {
+      const card = await getCardData(inst.card_id);
+      const t = aiTrapTarget(c.s, card);
+      const list = effects(card.effect_json);
+      let score = 0;
+      for (const fx of list) {
+        if (fx.type === 'counter') score += e.kind === 'hand_card' ? 3 + e.paid_mana : 7;
+        else if (fx.type === 'damage' || fx.type === 'damage_creature') score += t ? Number(fx.amount ?? 1) * 2 : fx.target === 'all_creatures' ? units(c.s, 1).length * Number(fx.amount ?? 1) - units(c.s, 0).length * Number(fx.amount ?? 1) : 0;
+        else if (fx.type === 'return_hand') score += t ? 3 + (find(c.s, t)?.cell.attack ?? 0) : 0;
+        else if (fx.type === 'heal') score += t ? Math.min(Number(fx.amount ?? 1), (find(c.s, t)?.cell.max_hp ?? 0) - (find(c.s, t)?.cell.hp ?? 0)) : 0;
+        else if (fx.type === 'buff') score += t ? 2 : 0;
+        else if (fx.type === 'draw') score += c.s.players[0].deck.length ? Number(fx.amount ?? 1) : -4;
+        else if (fx.type === 'discard') score += Math.min(c.s.players[1].hand.length, Number(fx.amount ?? 1));
+      }
+      return { inst, card, t, score: score - card.mana_cost * 0.5 };
+    }));
+    evaluated.sort((a, b) => b.score - a.score);
+    const best = evaluated[0];
+    if (best && best.score >= 2) { await playTrap(c, e, best.inst.instance_id, best.t); return; }
+    prepend(c.s, { kind: 'apply_event', event: e }); return;
+  }
+  c.s.pending_reaction = { window_id: randomUUID(), event: e, responder_index: responder, eligible_instance_ids: found.map(x => x.instance_id) };
+  log(c, responder, 'reaction_window', 'Finestra reattiva: gioca una Trappola o passa.', { window_id: c.s.pending_reaction.window_id });
+}
+async function drain(c: Context) {
+  for (let n = 0; n < 300 && c.s.status === 'running' && !c.s.pending_reaction && c.s.work_queue.length; n++) {
+    const step = c.s.work_queue.shift()!;
+    if (step.kind === 'declare_event') await declare(c, step.event);
+    else if (step.kind === 'apply_event') await applyEvent(c, step.event);
+    else if (step.kind === 'resolve_effect') await applyEffect(c, step);
+    else if (step.kind === 'finish_mostrissimo') {
+      if (c.s.pending_mostrissimo?.card_id === step.card_id && c.s.pending_mostrissimo.player_index === step.actor) delete c.s.pending_mostrissimo;
+    } else if (step.kind === 'check_winner') checkWinner(c, step.reason);
+    else if (step.kind === 'advance_ai') await advanceAi(c);
+  }
+  if (c.s.status === 'running' && !c.s.pending_reaction && c.s.work_queue.length) throw new Error('Limite di sicurezza della coda eventi raggiunto');
+  if (!c.s.pending_reaction && c.s.work_queue.length === 0) c.s.anti_loop_counter = 0;
+}
+async function mutate(id: string, action: (c: Context) => Promise<void>): Promise<GameState> {
+  const s = await load(id);
+  const c: Context = { id, s, logs: [] };
+  if (!s.pending_reaction && s.work_queue.length === 0) s.anti_loop_counter = 0;
+  await action(c); await drain(c);
+  return commit(id, s, c.logs);
+}
+function assertTurn(s: GameState, p: PlayerIndex, allowMost = false) {
+  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
+  if (s.pending_reaction || s.work_queue.length) throw new Error('Risolvi prima la finestra reattiva');
+  if (!allowMost && s.pending_mostrissimo) throw new Error('Completa prima l’evocazione del Mostrissimo');
+}
+function expireTemporaryBuffs(s: GameState) {
+  for (const p of [0, 1] as const) for (const { cell } of units(s, p)) {
+    if (cell.temp_attack) { cell.attack -= cell.temp_attack; delete cell.temp_attack; }
+  }
+}
+async function startTurn(c: Context, p: PlayerIndex) {
+  const s = c.s;
+  s.active_player_index = p; s.phase = 'upkeep'; s.anti_loop_counter = 0; s.mostrissimo_result = null;
+  if (p === 1) s.current_turn++;
+  const player = s.players[p]; player.max_mana = Math.min(6, player.max_mana + 1); player.current_mana = player.max_mana;
+  for (const { cell } of units(s, p)) cell.tired = false;
+  const count = draw(c, p, 1);
+  log(c, p, 'upkeep', `${label(p)} raggiunge ${player.current_mana}/${player.max_mana} mana e pesca ${count} carta/e.`);
+  if (s.status === 'running') s.phase = 'main';
+}
+async function advanceAi(c: Context) {
+  const s = c.s;
+  if (s.status !== 'running' || s.active_player_index !== 0 || !s.ai_progress) return;
+  const progress: AiProgress = s.ai_progress;
+  if (progress.stage === 'upkeep') { await startTurn(c, 0); progress.stage = 'actions'; if (s.status === 'running') prepend(s, { kind: 'advance_ai' }); return; }
+  if (progress.stage === 'human_upkeep') { await startTurn(c, 1); delete s.ai_progress; return; }
+  if (progress.stage === 'end' || progress.actions_taken >= 20) {
+    expireTemporaryBuffs(s); s.phase = 'end'; log(c, 0, 'turn_end', 'L’IA termina il turno.');
+    progress.stage = 'human_upkeep'; prepend(s, { kind: 'advance_ai' }); return;
+  }
+  const ready = units(s, 0).find(u => !u.cell.tired);
+  if (ready) {
+    const destinations = enemies(s, ready.position, 0);
+    const victim = destinations.length ? at(s, destinations[0]) : null;
+    const e: PendingEvent = {
+      kind: 'attack', actor: 0, instance_id: ready.cell.instance_id, from: ready.position,
+      target: victim ? { type: 'creature', position: destinations[0] } : { type: 'player', playerIndex: 1 },
+      ...(victim ? { target_instance_id: victim.instance_id } : {}),
+    };
+    progress.actions_taken++;
+    prepend(s, { kind: 'declare_event', event: e }, { kind: 'advance_ai' }); return;
+  }
+  const free = [0, 1, 2].filter(col => !s.board.rows[0][col]);
+  if (free.length) {
+    const cards = await Promise.all(s.players[0].hand.map(async inst => ({ inst, card: await getCardData(inst.card_id) })));
+    for (const { inst, card } of cards) {
+      if (card.card_type !== 'monster' || card.mana_cost > s.players[0].current_mana || effects(card.effect_json).some(x => !['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff'].includes(x.type))) continue;
+      const fx = effects(card.effect_json).find(x => x.target === 'any_creature' || x.type === 'return_hand');
+      const options: PlayCardOptions = { position: { row: 0, col: free[0] } };
+      if (fx) {
+        const t = eligible(s, 0, fx)[0];
+        if (t) options.targetInstanceId = t.cell.instance_id;
+        else if (!(fx.type === 'heal' && fx.target === 'any_creature')) continue;
+      }
+      s.players[0].hand = s.players[0].hand.filter(x => x.instance_id !== inst.instance_id);
+      s.players[0].graveyard.push(inst); s.players[0].current_mana -= card.mana_cost;
+      log(c, 0, 'card_declared', `L’IA dichiara ${card.name} pagando ${card.mana_cost} mana.`, { card_id: card.id, instance_id: inst.instance_id });
+      const e: PendingEvent = { kind: 'hand_card', actor: 0, instance_id: inst.instance_id, card_id: card.id, options, paid_mana: card.mana_cost };
+      progress.actions_taken++;
+      prepend(s, { kind: 'declare_event', event: e }, { kind: 'advance_ai' }); return;
+    }
+  }
+  const mover = units(s, 0).find(u => !u.cell.tired && s.players[0].current_mana >= 1 && around(u.position).some(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length));
+  if (mover) {
+    const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length)!;
+    s.players[0].current_mana--;
+    const e: PendingEvent = { kind: 'move', actor: 0, instance_id: mover.cell.instance_id, from: mover.position, to, paid_mana: 1 };
+    progress.actions_taken++;
+    prepend(s, { kind: 'declare_event', event: e }, { kind: 'advance_ai' }); return;
+  }
+  progress.stage = 'end'; prepend(s, { kind: 'advance_ai' });
 }
 
 async function deck(): Promise<CardInstance[]> {
   const { data, error } = await db.from('cards').select('id,card_type,mana_cost,is_boss,effect_json').in('card_type', ['monster', 'instant']);
   if (error || !data) throw new Error(`Catalogo non disponibile: ${error?.message ?? 'nessun risultato'}`);
-  const pool = data.map(c => ({ id: String(c.id), cost: Number(c.mana_cost), boss: Boolean(c.is_boss), type: String(c.card_type), raw: c.effect_json }));
-  const monsters = pool.filter(c => c.type === 'monster');
-  const instantTypes = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
-  const instants = pool.filter(c => c.type === 'instant' && effects(c.raw).length > 0 && effects(c.raw).every(e => instantTypes.has(e.type)));
-  const low = monsters.filter(c => c.cost <= 2), mid = monsters.filter(c => c.cost >= 2 && c.cost <= 4), high = monsters.filter(c => c.cost >= 5);
+  const pool = data.map(x => ({ id: String(x.id), cost: Number(x.mana_cost), boss: Boolean(x.is_boss), type: String(x.card_type), raw: x.effect_json as CardEffectJson | null }));
+  const monsters = pool.filter(x => x.type === 'monster');
+  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
+  const instants = pool.filter(x => x.type === 'instant' && effects(x.raw).length > 0 && effects(x.raw).every(e => supported.has(e.type)));
+  const low = monsters.filter(x => x.cost <= 2), mid = monsters.filter(x => x.cost >= 2 && x.cost <= 4), high = monsters.filter(x => x.cost >= 5);
   if (!instants.length || !low.length || !mid.length || !high.length) throw new Error('Catalogo insufficiente per il mazzo di test con Istantanei');
   const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)];
   for (let attempt = 0; attempt < 300; attempt++) {
-    const bosses = high.filter(c => c.boss);
+    const bosses = high.filter(x => x.boss);
     const chosen = [pick(bosses.length ? bosses : high), pick(low), pick(low), pick(mid), pick(mid), pick(mid), pick(instants), pick(instants)];
     while (chosen.length < 10) chosen.push(pick(monsters));
-    const avg = chosen.reduce((sum, c) => sum + c.cost, 0) / 10;
-    if (avg >= 2.5 && avg <= 4) return shuffle(chosen.map(c => ({ instance_id: randomUUID(), card_id: c.id })));
+    const avg = chosen.reduce((sum, x) => sum + x.cost, 0) / 10;
+    if (avg >= 2.5 && avg <= 4) return shuffle(chosen.map(x => ({ instance_id: randomUUID(), card_id: x.id })));
   }
   throw new Error('Impossibile generare un mazzo con curva mana 2,5–4 e due Istantanei');
 }
 async function offer(): Promise<{ shared: CardInstance[]; remaining: string[] }> {
   const { data, error } = await db.from('cards').select('id').eq('card_type', 'mostrissimo');
   if (error || !data) throw new Error(`Catalogo Mostrissimi non disponibile: ${error?.message ?? 'nessun risultato'}`);
-  const ids = shuffle(data.map(row => String(row.id)));
+  const ids = shuffle(data.map(x => String(x.id)));
   if (!ids.length) throw new Error('Il catalogo non contiene Mostrissimi');
   return { shared: ids.slice(0, 3).map(card_id => ({ card_id, instance_id: randomUUID() })), remaining: ids.slice(3) };
 }
@@ -258,255 +562,129 @@ export async function createNewMatch(userId: string): Promise<{ matchId: string;
   const [aiCards, humanCards, catalogue] = await Promise.all([deck(), deck(), offer()]);
   const { data, error } = await db.from('matches').insert({ player_id: userId, opponent_type: 'ai', opponent_name: 'IA Bellum Penumbrum', player_won: null, turns_count: 0, duration_seconds: 0 }).select('id').single();
   if (error || !data) throw new Error(`Creazione partita: ${error?.message ?? 'nessun ID'}`);
-  const matchId = String(data.id);
-  const ai = player(0, null, aiCards), human = player(1, userId, humanCards);
+  const matchId = String(data.id), ai = player(0, null, aiCards), human = player(1, userId, humanCards);
   for (let i = 0; i < 4; i++) ai.hand.push(ai.deck.shift()!);
   for (let i = 0; i < 3; i++) human.hand.push(human.deck.shift()!);
   human.max_mana = human.current_mana = 1;
-  const state: GameState = { state_version: 2, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null, shared_mostrissimi: catalogue.shared, remaining_mostrissimi: catalogue.remaining, used_mostrissimi: [], last_mostrissimo_turn: {}, mostrissimo_result: null };
-  const inserted = await db.from('game_state').insert({ match_id: matchId, state_json: state, current_turn: 1, current_phase: 2, last_updated: new Date().toISOString() });
+  const state: GameState = { state_version: 3, state_revision: 0, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null, shared_mostrissimi: catalogue.shared, remaining_mostrissimi: catalogue.remaining, used_mostrissimi: [], work_queue: [], last_mostrissimo_turn: {}, mostrissimo_result: null };
+  const inserted = await db.from('game_state').insert({ match_id: matchId, state_json: state, revision: 0, current_turn: 1, current_phase: phaseNumber(state.phase), last_updated: new Date().toISOString() });
   if (inserted.error) throw new Error(`Creazione stato: ${inserted.error.message}`);
-  await log(matchId, state, -1, 'match_create', 'Partita iniziata: tu hai 3 carte e 1 mana; l’IA ha 4 carte.');
+  await logMatchAction(matchId, { turn: 1, phase: 'main', player_index: -1, action_type: 'match_create', description: 'Partita iniziata: tu hai 3 carte e 1 mana; l’IA ha 4 carte.' });
   return { matchId, state };
 }
-export async function getMatchState(id: string) { return load(id); }
-function assertTurn(s: GameState, p: PlayerIndex) {
-  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
-  if (s.pending_mostrissimo) throw new Error('Completa prima l’evocazione del Mostrissimo');
-}
-function legalMostrissimoPositions(s: GameState, p: PlayerIndex, freed: Position[]): Position[] {
-  const result: Position[] = [];
-  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
-    const position = { row, col };
-    if (at(s, position)) continue;
-    if (row === home(p) || (freed.some(q => q.row === row && q.col === col) && allowed(p, row))) result.push(position);
-  }
-  return result;
-}
-function permanents(s: GameState, p: PlayerIndex): { id: string; kind: 'creature' | 'aura' | 'field'; position?: Position }[] {
-  const result: { id: string; kind: 'creature' | 'aura' | 'field'; position?: Position }[] = [];
-  for (const { position, cell } of units(s, p)) {
-    result.push({ id: cell.instance_id, kind: 'creature', position });
-    for (const aura of cell.auras) result.push({ id: aura.instance_id, kind: 'aura', position });
-  }
-  if (s.players[p].field_spell) result.push({ id: s.players[p].field_spell.instance_id, kind: 'field' });
-  return result;
-}
-async function failSummon(id: string, s: GameState, message: string) {
-  delete s.pending_mostrissimo;
-  s.mostrissimo_result = { outcome: 'failed', message };
-  await log(id, s, -1, 'mostrissimo_failed', message);
-  await saveGameState(id, s);
-}
-export async function startMostrissimoSummon(id: string, p: PlayerIndex, cardId: string): Promise<GameState> {
-  const s = await load(id); assertTurn(s, p);
-  if (s.last_mostrissimo_turn?.[p] === s.current_turn) throw new Error('Hai già tentato un’evocazione di Mostrissimo in questo turno');
-  if (!s.shared_mostrissimi?.some(c => c.card_id === cardId)) throw new Error('Mostrissimo non presente nell’offerta condivisa');
-  const card = await getCardData(cardId);
-  if (card.card_type !== 'mostrissimo') throw new Error('La carta selezionata non è un Mostrissimo');
-  const required = Number(card.sacrifice_cost);
-  if (!Number.isInteger(required) || required < 0 || required > 6) throw new Error('Costo in sacrifici non valido');
-  if (permanents(s, p).length < required) throw new Error('Non hai abbastanza permanenti per iniziare l’evocazione');
-  if (!legalMostrissimoPositions(s, p, []).length && !units(s, p).length) throw new Error('Nessuna cella legale per evocare');
-  s.last_mostrissimo_turn ??= {};
-  s.last_mostrissimo_turn[p] = s.current_turn;
-  s.pending_mostrissimo = { player_index: p, card_id: cardId, required, paid: [], freed_positions: [] };
-  s.mostrissimo_result = null;
-  await log(id, s, p, 'mostrissimo_start', `${label(p)} inizia l’evocazione di ${card.name}: ${required} permanenti.`, { card_id: card.id });
-  await saveGameState(id, s); return s;
-}
-export async function payMostrissimoSacrifice(id: string, p: PlayerIndex, instanceId: string): Promise<GameState> {
-  const s = await load(id);
-  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
-  const pending = s.pending_mostrissimo;
-  if (!pending || pending.player_index !== p || pending.paid.length >= pending.required) throw new Error('Nessun sacrificio richiesto');
-  const selected = permanents(s, p).find(x => x.id === instanceId);
-  if (!selected) throw new Error('Permanente non tuo oppure non più presente');
-  if (selected.kind === 'field') {
-    const field = s.players[p].field_spell!;
-    s.players[p].field_spell = null;
-    s.players[p].graveyard.push(field);
-  } else if (selected.kind === 'aura') {
-    const cell = at(s, selected.position!)!;
-    const index = cell.auras.findIndex(a => a.instance_id === instanceId);
-    s.players[p].graveyard.push(cell.auras.splice(index, 1)[0]);
-  } else {
-    const pos = selected.position!;
-    pending.freed_positions.push(pos);
-    await destroy(id, s, pos, p);
-  }
-  pending.paid.push(instanceId);
-  await log(id, s, p, 'mostrissimo_sacrifice', `Sacrificio ${pending.paid.length}/${pending.required}: ${selected.kind}.`, { instance_id: instanceId, position: selected.position ?? null });
-  const won = winner(s);
-  if (won !== null) { await finish(id, s, won, 'PV esauriti durante i sacrifici.'); return s; }
-  if (pending.paid.length < pending.required && permanents(s, p).length < pending.required - pending.paid.length) {
-    await failSummon(id, s, 'Evocazione fallita: non hai abbastanza permanenti per pagare i sacrifici restanti.'); return s;
-  }
-  if (pending.paid.length === pending.required && !legalMostrissimoPositions(s, p, pending.freed_positions).length) {
-    await failSummon(id, s, 'Evocazione fallita: nessuna cella legale.'); return s;
-  }
-  await saveGameState(id, s); return s;
-}
-export async function completeMostrissimoSummon(id: string, p: PlayerIndex, position: Position, targetId: string | null): Promise<GameState> {
-  const s = await load(id);
-  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
-  const pending = s.pending_mostrissimo;
-  if (!pending || pending.player_index !== p) throw new Error('Nessuna evocazione in corso');
-  if (pending.paid.length !== pending.required) throw new Error('Prima completa tutti i sacrifici');
-  const legal = legalMostrissimoPositions(s, p, pending.freed_positions);
-  if (!legal.length) { await failSummon(id, s, 'Evocazione fallita: nessuna cella legale.'); return s; }
-  if (!valid(position) || !legal.some(q => q.row === position.row && q.col === position.col)) throw new Error('Cella di evocazione non legale');
-  const offered = s.shared_mostrissimi?.find(c => c.card_id === pending.card_id);
-  if (!offered) throw new Error('Mostrissimo non più presente nell’offerta');
-  const card = await getCardData(pending.card_id);
-  const onPlay = effects(card.effect_json);
-  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
-  if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto del Mostrissimo non ancora supportato');
-  if (targetId && !onPlay.some(e => (e.target === 'any_creature' || e.type === 'return_hand') && eligible(s, p, e).some(x => x.cell.instance_id === targetId))) throw new Error('Bersaglio non valido');
-  s.shared_mostrissimi = s.shared_mostrissimi!.filter(c => c.instance_id !== offered.instance_id);
-  s.used_mostrissimi ??= [];
-  s.used_mostrissimi.push(card.id);
-  const replacement = s.remaining_mostrissimi?.shift();
-  if (replacement) s.shared_mostrissimi.push({ card_id: replacement, instance_id: randomUUID() });
-  delete s.pending_mostrissimo;
-  put(s, position, { instance_id: offered.instance_id, card_id: card.id, owner_index: p, attack: Number(card.attack ?? 0), hp: Number(card.hp ?? 1), max_hp: Number(card.hp ?? 1), tired: !keyword(card, 'iperattivo'), auras: [] });
-  s.players[p].color_counters[card.faction_code] = (s.players[p].color_counters[card.faction_code] ?? 0) + 1;
-  s.mostrissimo_result = { outcome: 'summoned', message: `${card.name} è stato evocato.` };
-  await log(id, s, p, 'mostrissimo_summoned', `${label(p)} evoca ${card.name}.`, { card_id: card.id, instance_id: offered.instance_id, position });
-  for (const effect of onPlay) {
-    const chosen = targetId && eligible(s, p, effect).some(x => x.cell.instance_id === targetId) ? targetId : null;
-    await resolve(id, s, p, other(p), card, effect, chosen, true);
-    const won = winner(s);
-    if (won !== null) { await finish(id, s, won, 'PV esauriti dopo l’ingresso del Mostrissimo.'); return s; }
-  }
-  await saveGameState(id, s); return s;
-}
+export async function getMatchState(id: string): Promise<GameState> { return load(id); }
 export async function playCard(id: string, p: PlayerIndex, cardInstanceId: string, options: PlayCardOptions = {}): Promise<GameState> {
-  const s = await load(id); assertTurn(s, p);
-  const owner = s.players[p];
-  const i = owner.hand.findIndex(c => c.instance_id === cardInstanceId);
-  if (i < 0) throw new Error('Carta non presente nella mano');
-  const card = await getCardData(owner.hand[i].card_id);
-  if (card.card_type === 'mostrissimo') throw new Error('Evoca i Mostrissimi dall’offerta condivisa');
-  if (owner.current_mana < card.mana_cost) throw new Error('Mana insufficiente');
-  const creature = card.card_type === 'monster';
-  if (creature) {
-    if (!options.position || !valid(options.position) || options.position.row !== home(p) || at(s, options.position)) throw new Error('Evoca in una cella libera della tua riga iniziale');
-  }
-  if (card.card_type === 'terraforma' && owner.field_spell) throw new Error('Una Terraforma è già attiva');
-  if (card.card_type === 'aura' && !options.targetInstanceId) throw new Error('Seleziona una creatura per l’Aura');
-  const onPlay = effects(card.effect_json);
-  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
-  if (card.card_type === 'instant' && s.active_player_index !== p) throw new Error('Le finestre reattive non sono ancora disponibili');
-  if (card.card_type === 'instant' && onPlay.some(e => String(e.type) === 'counter')) throw new Error('Contromagia richiede una Stregoneria avversaria dichiarata');
-  if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto carta non ancora supportato');
-  for (const effect of onPlay.filter(e => e.target === 'any_creature' || e.type === 'return_hand')) {
-    const candidates = eligible(s, p, effect);
-    if (options.targetInstanceId) {
-      if (!candidates.some(x => x.cell.instance_id === options.targetInstanceId)) throw new Error('Bersaglio non valido per questo effetto');
-    } else if (candidates.length && !(creature && effect.type === 'heal' && candidates.length === 0)) {
-      throw new Error('Seleziona una creatura bersaglio per l’effetto');
-    } else if (!creature) throw new Error('Questa magia richiede una creatura bersaglio');
-  }
-  const played = owner.hand.splice(i, 1)[0]; owner.current_mana -= card.mana_cost;
-  owner.color_counters[card.faction_code] = (owner.color_counters[card.faction_code] ?? 0) + 1;
-  if (creature) {
-    put(s, options.position!, { instance_id: played.instance_id, card_id: played.card_id, owner_index: p, attack: Number(card.attack ?? 0), hp: Number(card.hp ?? 1), max_hp: Number(card.hp ?? 1), tired: !keyword(card, 'iperattivo'), auras: [] });
-  } else if (card.card_type === 'terraforma') owner.field_spell = played;
-  else if (card.card_type === 'aura') locate(s, options.targetInstanceId!).cell.auras.push(played);
-  else owner.graveyard.push(played);
-  await log(id, s, p, 'play_card', `${label(p)} ${p === 1 ? 'giochi' : 'gioca'} ${card.name}.`, { card_id: card.id, instance_id: played.instance_id, position: options.position ?? null });
-  for (const effect of onPlay) {
-    const resolvedTarget = creature && effect.type === 'heal' && effect.target === 'any_creature' && !options.targetInstanceId && units(s, p).length === 1 ? played.instance_id : options.targetInstanceId ?? null;
-    await resolve(id, s, p, other(p), card, effect, resolvedTarget, creature);
-    const won = winner(s);
-    if (won !== null) { await finish(id, s, won, 'PV esauriti dopo un effetto di pesca.'); return s; }
-  }
-  await saveGameState(id, s); return s;
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, p);
+    const owner = s.players[p], inst = owner.hand.find(x => x.instance_id === cardInstanceId);
+    if (!inst) throw new Error('Carta non presente nella mano');
+    const card = await getCardData(inst.card_id);
+    if (card.card_type === 'mostrissimo') throw new Error('Evoca i Mostrissimi dall’offerta condivisa');
+    if (card.card_type === 'instant') throw new Error('Gli Istantanei si giocano soltanto nella finestra del turno avversario');
+    if (owner.current_mana < card.mana_cost) throw new Error('Mana insufficiente');
+    if (card.card_type === 'monster' && (!options.position || !valid(options.position) || options.position.row !== home(p) || at(s, options.position))) throw new Error('Evoca in una cella libera della tua riga iniziale');
+    if (card.card_type === 'terraforma' && owner.field_spell) throw new Error('Una Terraforma è già attiva');
+    if (card.card_type === 'aura' && (!options.targetInstanceId || find(s, options.targetInstanceId)?.cell.owner_index !== p)) throw new Error('Seleziona una tua creatura per l’Aura');
+    const onPlay = effects(card.effect_json);
+    if (onPlay.some(x => !['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff'].includes(x.type))) throw new Error('Effetto carta non ancora supportato');
+    for (const effect of onPlay.filter(x => x.target === 'any_creature' || x.type === 'return_hand')) {
+      if (options.targetInstanceId && !target(s, p, effect, options.targetInstanceId)) throw new Error('Bersaglio non valido');
+      if (!options.targetInstanceId && eligible(s, p, effect).length && !(card.card_type === 'monster' && effect.type === 'heal' && units(s, p).length === 0)) throw new Error('Seleziona una creatura bersaglio');
+      if (!options.targetInstanceId && card.card_type !== 'monster') throw new Error('Questa magia richiede una creatura bersaglio');
+    }
+    owner.hand = owner.hand.filter(x => x.instance_id !== inst.instance_id);
+    owner.graveyard.push(inst); owner.current_mana -= card.mana_cost;
+    log(c, p, 'card_declared', `${label(p)} dichiara ${card.name} e paga ${card.mana_cost} mana.`, { card_id: card.id, instance_id: inst.instance_id });
+    prepend(s, { kind: 'declare_event', event: { kind: 'hand_card', actor: p, instance_id: inst.instance_id, card_id: card.id, options, paid_mana: card.mana_cost } });
+  });
 }
 export async function moveCreature(id: string, p: PlayerIndex, from: Position, to: Position): Promise<GameState> {
-  const s = await load(id); assertTurn(s, p);
-  if (!valid(from) || !valid(to) || !adjacent(from, to) || !allowed(p, to.row)) throw new Error('Movimento non valido: una cella ortogonale, senza entrare nella riga avversaria');
-  const c = at(s, from);
-  if (!c || c.owner_index !== p || c.tired || at(s, to)) throw new Error('Creatura stanca, non tua o destinazione occupata');
-  if (s.players[p].current_mana < 1) throw new Error('Serve 1 mana per Muovi');
-  s.players[p].current_mana--;
-  put(s, from, null); put(s, to, c);
-  const card = await getCardData(c.card_id);
-  await log(id, s, p, 'move_creature', `${label(p)} ${p === 1 ? 'muovi' : 'muove'} ${card.name} spendendo 1 mana. Rimane pronta.`, { from_position: from, to_position: to, card_id: card.id, instance_id: c.instance_id });
-  await saveGameState(id, s); return s;
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, p);
+    if (!valid(from) || !valid(to) || !adjacent(from, to) || !allowed(p, to.row)) throw new Error('Movimento non valido');
+    const cell = at(s, from);
+    if (!cell || cell.owner_index !== p || cell.tired || at(s, to)) throw new Error('Creatura stanca, non tua o destinazione occupata');
+    if (s.players[p].current_mana < 1) throw new Error('Serve 1 mana per Muovi');
+    s.players[p].current_mana--;
+    prepend(s, { kind: 'declare_event', event: { kind: 'move', actor: p, instance_id: cell.instance_id, from, to, paid_mana: 1 } });
+  });
 }
-export async function attack(id: string, p: PlayerIndex, from: Position, target: AttackTarget): Promise<GameState> {
-  const s = await load(id); assertTurn(s, p);
-  if (!valid(from)) throw new Error('Attaccante non valido');
-  const c = at(s, from);
-  if (!c || c.owner_index !== p || c.tired) throw new Error('Creatura non tua oppure stanca');
-  const options = enemies(s, from, p);
-  const name = (await getCardData(c.card_id)).name;
-  if (target.type === 'creature') {
-    if (!valid(target.position) || !options.some(q => q.row === target.position.row && q.col === target.position.col)) throw new Error('Bersaglio non ortogonalmente adiacente');
-    const victim = at(s, target.position)!;
-    victim.hp -= c.attack; c.tired = true;
-    await log(id, s, p, 'attack_creature', `${label(p)} ${p === 1 ? 'attacchi' : 'attacca'} con ${name}: ${c.attack} danno/i a una creatura.`, { position: from, target_instance_id: victim.instance_id });
-    if (victim.hp <= 0) await destroy(id, s, target.position, p);
-  } else {
-    if (target.playerIndex !== other(p) || options.length) throw new Error('Attacco diretto vietato: esistono altri bersagli validi');
-    s.players[other(p)].life -= c.attack; c.tired = true;
-    await log(id, s, p, 'attack_player', `${label(p)} ${p === 1 ? 'attacchi' : 'attacca'} direttamente con ${name}: ${c.attack} danno/i.`, { position: from, target_player_index: other(p) });
-  }
-  const won = winner(s);
-  if (won !== null) await finish(id, s, won, 'PV esauriti.');
-  else await saveGameState(id, s);
-  return s;
+export async function attack(id: string, p: PlayerIndex, from: Position, targetPosition: AttackTarget): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, p);
+    if (!valid(from)) throw new Error('Attaccante non valido');
+    const cell = at(s, from);
+    if (!cell || cell.owner_index !== p || cell.tired) throw new Error('Creatura non tua oppure stanca');
+    const options = enemies(s, from, p);
+    let victim: BoardCell | null = null;
+    if (targetPosition.type === 'creature') {
+      if (!valid(targetPosition.position) || !options.some(q => q.row === targetPosition.position.row && q.col === targetPosition.position.col)) throw new Error('Bersaglio non ortogonalmente adiacente');
+      victim = at(s, targetPosition.position);
+    } else if (targetPosition.playerIndex !== other(p) || options.length) throw new Error('Attacco diretto vietato');
+    prepend(s, { kind: 'declare_event', event: { kind: 'attack', actor: p, instance_id: cell.instance_id, from, target: targetPosition, ...(victim ? { target_instance_id: victim.instance_id } : {}) } });
+  });
 }
-async function start(id: string, p: PlayerIndex): Promise<GameState> {
-  const s = await load(id);
-  s.active_player_index = p; s.phase = 'upkeep'; s.anti_loop_counter = 0; s.mostrissimo_result = null;
-  if (p === 1) s.current_turn++;
-  const player = s.players[p]; player.max_mana = Math.min(6, player.max_mana + 1); player.current_mana = player.max_mana;
-  for (const { cell } of units(s, p)) cell.tired = false;
-  const count = await draw(id, s, p, 1);
-  await log(id, s, p, 'upkeep', `${p === 1 ? 'Raggiungi' : 'L’IA raggiunge'} ${player.current_mana}/${player.max_mana} mana e ${p === 1 ? 'peschi' : 'pesca'} ${count} carta/e.`);
-  const won = winner(s);
-  if (won !== null) { await finish(id, s, won, 'PV esauriti dopo una pesca impossibile.'); return s; }
-  s.phase = 'main'; await saveGameState(id, s); return s;
+export async function startMostrissimoSummon(id: string, p: PlayerIndex, cardId: string): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, p);
+    if (s.last_mostrissimo_turn[p] === s.current_turn) throw new Error('Hai già tentato un Mostrissimo in questo turno');
+    const offered = s.shared_mostrissimi.find(x => x.card_id === cardId);
+    if (!offered) throw new Error('Mostrissimo non presente nell’offerta condivisa');
+    const card = await getCardData(cardId), required = Number(card.sacrifice_cost);
+    if (card.card_type !== 'mostrissimo' || !Number.isInteger(required) || required < 0 || required > 6) throw new Error('Costo in sacrifici non valido');
+    if (permanents(s, p).length < required) throw new Error('Non hai abbastanza permanenti');
+    if (!legalPositions(s, p, []).length && !units(s, p).length) throw new Error('Nessuna cella legale');
+    s.last_mostrissimo_turn[p] = s.current_turn;
+    s.pending_mostrissimo = { player_index: p, card_id: card.id, offered_instance_id: offered.instance_id, required, paid: [], freed_positions: [], stage: 'paying' };
+    s.mostrissimo_result = null;
+    log(c, p, 'mostrissimo_start', `${label(p)} inizia l’evocazione di ${card.name}: ${required} permanenti.`, { card_id: card.id });
+  });
 }
-async function aiTurn(id: string) {
-  for (let count = 0; count < 20; count++) {
-    const s = await load(id);
-    if (s.status !== 'running') break;
-    const ready = units(s, 0).filter(u => !u.cell.tired);
-    if (ready.length) {
-      const u = ready[0]; const targets = enemies(s, u.position, 0);
-      await attack(id, 0, u.position, targets.length ? { type: 'creature', position: targets[0] } : { type: 'player', playerIndex: 1 });
-      continue;
+export async function payMostrissimoSacrifice(id: string, p: PlayerIndex, instanceId: string): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, p, true);
+    const pending = s.pending_mostrissimo;
+    if (!pending || pending.player_index !== p || pending.stage !== 'paying' || pending.paid.length >= pending.required) throw new Error('Nessun sacrificio richiesto');
+    const selected = permanents(s, p).find(x => x.id === instanceId);
+    if (!selected) throw new Error('Permanente non tuo o non più presente');
+    prepend(s, { kind: 'declare_event', event: { kind: 'mostrissimo_sacrifice', actor: p, instance_id: instanceId, card_id: selected.card_id } });
+  });
+}
+export async function completeMostrissimoSummon(id: string, p: PlayerIndex, position: Position, targetId: string | null): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, p, true);
+    const pending = s.pending_mostrissimo;
+    if (!pending || pending.player_index !== p || pending.stage !== 'paying') throw new Error('Nessuna evocazione in corso');
+    if (pending.paid.length !== pending.required) throw new Error('Prima completa tutti i sacrifici');
+    if (!valid(position) || !legalPositions(s, p, pending.freed_positions).some(x => x.row === position.row && x.col === position.col)) throw new Error('Cella di evocazione non legale');
+    const card = await getCardData(pending.card_id);
+    if (effects(card.effect_json).some(x => !['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff'].includes(x.type))) throw new Error('Effetto del Mostrissimo non supportato');
+    if (targetId && !effects(card.effect_json).some(x => (x.target === 'any_creature' || x.type === 'return_hand') && target(s, p, x, targetId))) throw new Error('Bersaglio non valido');
+    pending.stage = 'before_entry'; pending.position = position; pending.target_instance_id = targetId;
+    prepend(s, { kind: 'declare_event', event: { kind: 'mostrissimo_before_entry', actor: p, card_id: card.id, offered_instance_id: pending.offered_instance_id, position, target_instance_id: targetId } });
+  });
+}
+export async function resolveTrapChoice(id: string, p: PlayerIndex, choice: TrapChoice): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s, window = s.pending_reaction;
+    if (!window || window.window_id !== choice.window_id || window.responder_index !== p || s.status !== 'running') throw new Error('Finestra reattiva scaduta o non tua');
+    // Chiudere PRIMA di risolvere la carta garantisce che non si creino catene.
+    delete s.pending_reaction;
+    if (choice.action === 'pass') {
+      log(c, p, 'trap_pass', `${label(p)} passa.`, { window_id: window.window_id });
+      prepend(s, { kind: 'apply_event', event: window.event });
+    } else {
+      if (!window.eligible_instance_ids.includes(choice.card_instance_id)) throw new Error('Trappola non disponibile in questa finestra');
+      await playTrap(c, window.event, choice.card_instance_id, choice.target_instance_id ?? null);
     }
-    const free = [0, 1, 2].filter(col => !s.board.rows[0][col]);
-    if (free.length && s.players[0].hand.length) {
-      const cards = await Promise.all(s.players[0].hand.map(async c => ({ instance: c, card: await getCardData(c.card_id) })));
-      const choices = cards.filter(x => x.card.card_type === 'monster' && x.card.mana_cost <= s.players[0].current_mana && effects(x.card.effect_json).every(e => ['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand'].includes(e.type)));
-      const choice = choices.find(x => !targeted(x.card)) ?? choices.find(x => effects(x.card.effect_json).every(e => (e.type === 'damage' || e.type === 'damage_creature') && e.target === 'any_creature' && units(s, 1).length === 0)) ?? choices.find(x => targeted(x.card) && units(s, 1).length);
-      if (choice) {
-        const options: PlayCardOptions = { position: { row: 0, col: free[0] } };
-        const effect = effects(choice.card.effect_json).find(e => e.target === 'any_creature' || e.type === 'return_hand');
-        if (effect && eligible(s, 0, effect).length) options.targetInstanceId = eligible(s, 0, effect)[0].cell.instance_id;
-        await playCard(id, 0, choice.instance.instance_id, options); continue;
-      }
-    }
-    const mover = units(s, 0).find(u => !u.cell.tired && s.players[0].current_mana >= 1 && around(u.position).some(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length));
-    if (mover) {
-      const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length)!;
-      await moveCreature(id, 0, mover.position, to); continue;
-    }
-    break;
-  }
-  const s = await load(id);
-  if (s.status === 'running') { expireTemporaryBuffs(s); s.phase = 'end'; await log(id, s, 0, 'turn_end', 'L’IA termina il turno.'); await saveGameState(id, s); }
+  });
 }
 export async function endHumanTurn(id: string): Promise<GameState> {
-  const s = await load(id); assertTurn(s, 1);
-  expireTemporaryBuffs(s); s.phase = 'end'; await log(id, s, 1, 'turn_end', 'Termini il turno.'); await saveGameState(id, s);
-  const ai = await start(id, 0); if (ai.status === 'finished') return ai;
-  await aiTurn(id); const after = await load(id);
-  return after.status === 'running' ? start(id, 1) : after;
+  return mutate(id, async c => {
+    const s = c.s; assertTurn(s, 1);
+    expireTemporaryBuffs(s); s.phase = 'end';
+    log(c, 1, 'turn_end', 'Termini il turno.');
+    s.ai_progress = { stage: 'upkeep', actions_taken: 0 };
+    prepend(s, { kind: 'advance_ai' });
+  });
 }
