@@ -200,7 +200,6 @@ async function effectBuff(c: Context) {
   } else throw new Error('Potenziamento non supportato');
   await log(c.id, c.state, c.owner, 'effect_buff', `${c.card.name}: +${c.amount} ${detail.stat === 'hp' ? 'HP permanenti' : detail.duration === 'turn' ? 'attacco fino a fine turno' : 'attacco permanente'}.`);
 }
-
 function expireTemporaryBuffs(s: GameState) {
   for (const owner of [0, 1] as const) for (const { cell } of units(s, owner)) {
     const buffed = cell as BoardCell & { temp_attack?: number };
@@ -280,10 +279,9 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   const card = await getCardData(owner.hand[i].card_id);
   if (card.card_type === 'mostrissimo') throw new Error('Evoca i Mostrissimi dall’offerta condivisa');
   if (owner.current_mana < card.mana_cost) throw new Error('Mana insufficiente');
-  const creature = card.card_type === 'monster' || card.card_type === 'mostrissimo';
+  const creature = card.card_type === 'monster';
   if (creature) {
     if (!options.position || !valid(options.position) || options.position.row !== home(p) || at(s, options.position)) throw new Error('Evoca in una cella libera della tua riga iniziale');
-    if (card.card_type === 'mostrissimo') throw new Error('I Mostrissimi richiedono la selezione manuale dei sacrifici: non ancora disponibile in questa versione.');
   }
   if (card.card_type === 'terraforma' && owner.field_spell) throw new Error('Una Terraforma è già attiva');
   if (card.card_type === 'aura' && !options.targetInstanceId) throw new Error('Seleziona una creatura per l’Aura');
