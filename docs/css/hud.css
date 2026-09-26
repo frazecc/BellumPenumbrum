@@ -1,4 +1,6 @@
-/* Bellum Penumbrum: HUD simmetrico IA / giocatore. Caricare per ultimo. */
+/* css/hud.css — HUD e leggibilita' carte v4. Caricare per ultimo.
+   Sostituisce INTEGRALMENTE l'attuale css/hud.css.
+   style.css, compact.css, layout.css e hud-log.css restano invariati. */
 .game-screen>.hud-top{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:.25rem;padding:.3rem .45rem}
 .game-screen>.hud-top .hud-controls{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.4rem;min-width:0}
 .game-screen>.hud-top .hud-status{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap}
@@ -24,6 +26,99 @@
 .game-screen>.player-summary-panel .action-panel{align-self:center;justify-content:center;border:0;padding:0;margin:0;gap:.3rem}
 .game-screen>.player-summary-panel .action-panel button{min-height:1.7rem;font-size:.71rem}
 .game-screen .hud-source-only{position:absolute!important;width:1px!important;height:1px!important;margin:-1px!important;padding:0!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
-@media(max-width:900px){.game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(110px,.8fr) minmax(0,1fr);gap:.22rem;padding:.22rem}.game-screen .arena-hud .hud-group{gap:.15rem}.game-screen .arena-hud .hud-value{min-width:2.2rem;min-height:2rem;padding:.08rem .12rem}.game-screen .arena-hud .hud-value strong{font-size:.9rem}.game-screen .arena-hud .hud-value .hud-label{font-size:.5rem}}
-@media(max-width:560px){.game-screen>.hud-top{gap:.12rem;padding:.12rem .2rem}.game-screen>.hud-top .hud-controls{gap:.2rem}.game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(85px,.82fr) minmax(0,1fr);gap:.08rem;padding:.13rem}.game-screen .arena-hud .hud-name{font-size:.83rem}.game-screen .arena-hud .hud-value{min-width:1.65rem;min-height:1.65rem;border-radius:.2rem;padding:.04rem}.game-screen .arena-hud .hud-value .hud-label{font-size:.42rem}.game-screen .arena-hud .hud-value strong{font-size:.75rem}.game-screen .arena-hud .hud-group{gap:.08rem}.game-screen>.player-summary-panel{gap:.12rem;padding:.1rem}.game-screen>.player-summary-panel .action-panel button{min-height:1.55rem;font-size:.64rem}}
-@media(max-width:380px){.game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(70px,.8fr) minmax(0,1fr)}.game-screen .arena-hud .hud-value{min-width:1.5rem}.game-screen .arena-hud .hud-name{font-size:.73rem}}
+
+/* Il tavolo puo' scorrere: le carte non vengono piu' compresse a 50px. */
+.game-screen{height:auto;min-height:calc(100dvh - .8rem);overflow:visible;grid-template-rows:auto minmax(320px, min(62dvh,780px)) auto auto}
+.game-screen>.battlefield{min-height:0}
+.game-screen .shared-board{height:100%;max-height:100%;max-width:100%;aspect-ratio:1/1}
+.game-screen>.hand-section:not(#mostrissimo-panel){min-height:0;padding:.45rem .6rem .7rem}
+.game-screen>.hand-section .section-heading{justify-content:space-between;flex-wrap:wrap;gap:.3rem;margin:0 0 .35rem}
+.game-screen>.hand-section .section-heading h2{font-size:1.05rem}
+.game-screen>.hand-section .section-heading .muted{display:block;max-width:100%;font-size:.84rem;line-height:1.2}
+.game-screen .hand-section .hand{height:clamp(190px,27dvh,270px);min-height:0;align-items:stretch;justify-content:safe center;gap:.65rem;padding:.3rem .35rem .75rem;overflow-x:auto;overflow-y:hidden}
+.game-screen .hand-section .hand-card{flex:0 0 clamp(142px,18vw,190px);width:clamp(142px,18vw,190px);height:100%;min-height:0;overflow:hidden;border-radius:.45rem}
+.game-screen .hand-section .hand-card>.board-card{display:grid;grid-template-rows:auto minmax(0,1fr) auto minmax(2.2rem,auto) auto;width:100%;height:100%;overflow:hidden;border:2px solid var(--faction-color);border-radius:.45rem;background:#d2d2d7;box-shadow:0 3px 8px #000b}
+.game-screen .hand-section .hand-card>.board-card>.board-card-titlebar{display:flex!important;position:static;width:auto;min-height:2.2rem;align-items:center;justify-content:space-between;gap:.2rem;padding:.2rem .32rem;border-bottom:1px solid var(--faction-dark);background:var(--faction-light)}
+.game-screen .hand-section .hand-card>.board-card>.board-card-titlebar>.board-card-name{display:block;min-width:0;color:#141721;font-size:clamp(.8rem,1.1vw,.98rem);line-height:1.05;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2}
+.game-screen .hand-section .hand-card>.board-card>.board-card-titlebar>.board-card-cost{position:static;flex:0 0 auto;min-width:2rem;min-height:2rem;padding:.08rem .2rem;font-size:.85rem}
+.game-screen .hand-section .hand-card>.board-card>.board-card-art{position:static;inset:auto;width:100%;height:100%;min-height:0;background:#343746}
+.game-screen .hand-section .hand-card>.board-card>.board-card-art img{display:block;width:100%;height:100%;object-fit:cover}
+.game-screen .hand-section .hand-card>.board-card>.board-card-type{display:block!important;padding:.17rem .28rem;color:#191b21;background:var(--faction-light);font-size:.75rem;font-weight:900;letter-spacing:.03em}
+.game-screen .hand-section .hand-card>.board-card>.board-card-effect{display:-webkit-box!important;min-height:2.2rem;padding:.2rem .3rem;overflow:hidden;color:#171821;background:#d6d7dd;font-size:.72rem;line-height:1.15;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.game-screen .hand-section .hand-card>.board-card>.board-card-footer{display:flex!important;position:static;min-height:1.35rem;padding:.12rem .25rem;background:var(--faction-light);color:#1c202b;text-shadow:none;font-size:.73rem}
+.game-screen .hand-section .hand-card>.board-card>.board-card-footer>span{display:block;min-width:0;min-height:0;padding:0;border:0;border-radius:0;background:none;box-shadow:none;color:#1c202b}
+.game-screen .hand-section .hand-card.playable{transform:translateY(-2px)}
+.game-screen .hand-section .hand-card:disabled{opacity:.82}
+
+/* L'offerta e' leggibile: nome, immagine, tipo, sacrifici e testo breve. */
+.game-screen #mostrissimo-panel .boss-offer{display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:.45rem;overflow-y:auto;overflow-x:hidden;min-height:0;max-width:100%;width:100%;padding:.25rem}
+.game-screen #mostrissimo-panel .boss-card{flex:0 0 145px;width:min(100%,190px);height:145px;border:1px solid #cbbd9b;border-radius:.4rem;overflow:hidden}
+.game-screen #mostrissimo-panel .boss-card>.board-card{display:grid;grid-template-rows:auto minmax(0,1fr) auto auto;width:100%;height:100%;overflow:hidden}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar{display:flex!important;position:static;align-items:center;justify-content:space-between;gap:.2rem;width:auto;padding:.12rem .2rem;background:var(--faction-light)}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-name{display:block;color:#161821;font-size:.73rem;white-space:normal;line-height:1.05}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-cost{position:static;flex:0 0 auto;min-width:1.7rem;min-height:1.7rem;font-size:.77rem}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-art{position:static;inset:auto;width:100%;height:100%;min-height:0}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-type{display:block!important;padding:.08rem .2rem;color:#171821;background:var(--faction-light);font-size:.67rem;font-weight:900}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-effect{display:block!important;min-height:1.1rem;padding:.1rem .2rem;color:#202126;background:#d6d7dd;font-size:.64rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-footer{display:none!important}
+
+/* Una Terraforma occupa la cella ma non mostra finti ATK/HP. */
+.game-screen .board-cell.terraforma-cell{border:3px double #e8cf8b;background:#342b27}
+.game-screen .board-cell.terraforma-cell>.board-card>.board-card-footer{display:none!important}
+.game-screen .board-cell.terraforma-cell>.board-card::before{content:'TERRAFORMA';position:absolute;z-index:3;top:0;left:0;right:0;padding:.15rem .1rem;background:#241d13de;color:#ffdea1;text-align:center;font-size:clamp(.55rem,1vw,.8rem);font-weight:900;letter-spacing:.04em;pointer-events:none}
+.game-screen .board-cell .cell-aura-count{position:absolute;z-index:4;top:.15rem;left:.15rem;min-width:1.8rem;padding:.12rem .2rem;border:1px solid #ffe8b4;border-radius:.25rem;background:#25213bdd;color:#fff1bf;font-size:.76rem;font-weight:900;pointer-events:none}
+
+/* Preview di Trappola: tutte le carte restano riconoscibili prima del clic. */
+#reaction-choices>.hand-card{flex:0 0 160px;width:160px;height:215px;min-height:0;overflow:hidden;border:1px solid #b99b65;border-radius:.45rem}
+#reaction-choices>.hand-card>.board-card{display:grid;grid-template-rows:auto minmax(0,1fr) auto minmax(2rem,auto);width:100%;height:100%;overflow:hidden;border:2px solid var(--faction-color)}
+#reaction-choices>.hand-card .board-card-titlebar{display:flex;align-items:center;justify-content:space-between;gap:.2rem;min-height:2rem}
+#reaction-choices>.hand-card .board-card-name{color:#1c1b21;font-size:.8rem;white-space:normal;line-height:1.05}
+#reaction-choices>.hand-card .board-card-cost{flex:0 0 auto;font-size:.75rem}
+#reaction-choices>.hand-card .board-card-art{min-height:0}
+#reaction-choices>.hand-card .board-card-art img{display:block;width:100%;height:100%;object-fit:cover}
+#reaction-choices>.hand-card .board-card-type{display:block;color:#1c1d22;background:var(--faction-light);font-size:.68rem;font-weight:900;padding:.12rem}
+#reaction-choices>.hand-card .board-card-effect{display:-webkit-box;overflow:hidden;min-height:2rem;padding:.2rem;color:#171921;background:#dadbe0;font-size:.7rem;line-height:1.1;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+
+@media(max-width:900px){
+  .game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(110px,.8fr) minmax(0,1fr);gap:.22rem;padding:.22rem}
+  .game-screen .arena-hud .hud-group{gap:.15rem}
+  .game-screen .arena-hud .hud-value{min-width:2.2rem;min-height:2rem;padding:.08rem .12rem}
+  .game-screen .arena-hud .hud-value strong{font-size:.9rem}
+  .game-screen .arena-hud .hud-value .hud-label{font-size:.5rem}
+  .game-screen .hand-section .hand{height:215px}
+  .game-screen .hand-section .hand-card{flex-basis:155px;width:155px}
+}
+@media(max-width:600px){
+  .app-shell{width:calc(100% - .5rem);padding:.2rem 0 .75rem}
+  .game-screen{display:flex;flex-direction:column;gap:.3rem;height:auto;min-height:calc(100dvh - .4rem);overflow:visible}
+  .game-screen>.hud-top,.game-screen>.battlefield,.game-screen>.arena-sidebar,.game-screen>.player-summary-panel,.game-screen>.hand-section:not(#mostrissimo-panel){flex:0 0 auto;width:100%;min-height:0}
+  .game-screen>.battlefield{padding:.3rem;overflow:visible}
+  .game-screen>.battlefield .shared-board{width:min(100%,min(86vw,54dvh));height:auto;max-height:none;aspect-ratio:1/1}
+  .game-screen>.arena-sidebar{display:flex;flex-direction:column;gap:.25rem;overflow:visible}
+  .game-screen>.arena-sidebar>#mostrissimo-panel{flex:0 0 auto;display:flex;flex-direction:column;align-items:stretch;max-height:none;overflow:visible}
+  .game-screen #mostrissimo-panel .boss-offer{flex-direction:row;align-items:stretch;justify-content:flex-start;overflow-x:auto;overflow-y:hidden;min-height:0;max-height:none;width:100%;padding:.25rem}
+  .game-screen #mostrissimo-panel .boss-card{flex:0 0 130px;width:130px;height:145px}
+  .game-screen>.arena-sidebar>.logs-panel .log-disclosure[open]{position:fixed;right:.4rem;bottom:.4rem;max-height:70dvh}
+  .game-screen>.player-summary-panel{padding:.22rem}
+  .game-screen>.hand-section:not(#mostrissimo-panel){padding:.4rem .25rem .6rem}
+  .game-screen .hand-section .hand{height:190px;gap:.4rem;justify-content:flex-start;padding:.2rem .2rem .6rem}
+  .game-screen .hand-section .hand-card{flex:0 0 133px;width:133px;height:100%}
+  .game-screen .hand-section .hand-card>.board-card>.board-card-titlebar>.board-card-name{font-size:.78rem}
+  .game-screen .hand-section .hand-card>.board-card>.board-card-effect{font-size:.68rem;-webkit-line-clamp:2}
+  .game-screen>.hud-top{gap:.12rem;padding:.12rem .2rem}
+  .game-screen>.hud-top .hud-controls{gap:.2rem}
+  .game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(85px,.82fr) minmax(0,1fr);gap:.08rem;padding:.13rem}
+  .game-screen .arena-hud .hud-name{font-size:.83rem}
+  .game-screen .arena-hud .hud-value{min-width:1.65rem;min-height:1.65rem;border-radius:.2rem;padding:.04rem}
+  .game-screen .arena-hud .hud-value .hud-label{font-size:.42rem}
+  .game-screen .arena-hud .hud-value strong{font-size:.75rem}
+  .game-screen .arena-hud .hud-group{gap:.08rem}
+  .game-screen>.player-summary-panel{gap:.12rem}
+  .game-screen>.player-summary-panel .action-panel button{min-height:1.55rem;font-size:.64rem}
+  #reaction-choices>.hand-card{flex-basis:135px;width:135px;height:185px}
+}
+@media(max-width:380px){
+  .game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(70px,.8fr) minmax(0,1fr)}
+  .game-screen .arena-hud .hud-value{min-width:1.5rem}
+  .game-screen .arena-hud .hud-name{font-size:.73rem}
+}
