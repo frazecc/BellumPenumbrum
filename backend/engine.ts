@@ -476,6 +476,80 @@ async function startTurn(c: Context, p: PlayerIndex) {
   log(c, p, 'upkeep', `${label(p)} raggiunge ${player.current_mana}/${player.max_mana} mana e pesca ${count} carta/e.`);
   if (s.status === 'running') s.phase = 'main';
 }
+async function continueAiMostrissimo(c: Context): Promise<void> {
+  const s = c.s, pending = s.pending_mostrissimo;
+  if (!pending || pending.player_index !== 0) return;
+  if (pending.stage === 'paying') {
+    const remaining = pending.required - pending.paid.length;
+    if (remaining > 0) {
+      const choices = permanents(s, 0);
+      if (choices.length < remaining) {
+        failSummon(c, 'Evocazione IA fallita: sacrifici insufficienti.');
+        prepend(s, { kind: 'advance_ai' }); return;
+      }
+      const sacrificeValue = (item: (typeof choices)[number]): number => {
+        if (item.kind === 'aura') return 0;
+        if (item.kind === 'field') return 0.5;
+        const cell = item.position ? at(s, item.position) : null;
+        return cell ? 1 + cell.attack * 2 + cell.hp : 100;
+      };
+      choices.sort((a, b) => sacrificeValue(a) - sacrificeValue(b));
+      const chosen = choices[0];
+      prepend(s,
+        { kind: 'declare_event', event: { kind: 'mostrissimo_sacrifice', actor: 0, instance_id: chosen.id, card_id: chosen.card_id } },
+        { kind: 'advance_ai' },
+      );
+      return;
+    }
+    const cells = legalPositions(s, 0, pending.freed_positions);
+    if (!cells.length) {
+      failSummon(c, 'Evocazione IA fallita: nessuna cella legale.');
+      prepend(s, { kind: 'advance_ai' }); return;
+    }
+    const position = cells.find(q => q.row === 0) ?? cells[0];
+    const card = await getCardData(pending.card_id);
+    const effect = effects(card.effect_json).find(x => x.target === 'any_creature' || x.type === 'return_hand');
+    const candidates = effect ? eligible(s, 0, effect) : [];
+    const selected = candidates.find(x => x.cell.owner_index === 1) ?? candidates[0];
+    const targetId = selected?.cell.instance_id ?? null;
+    pending.stage = 'before_entry'; pending.position = position; pending.target_instance_id = targetId;
+    log(c, 0, 'mostrissimo_position', `L’IA sceglie la cella [${position.row},${position.col}] per ${card.name}.`, { card_id: card.id, position });
+    prepend(s,
+      { kind: 'declare_event', event: { kind: 'mostrissimo_before_entry', actor: 0, card_id: card.id, offered_instance_id: pending.offered_instance_id, position, target_instance_id: targetId } },
+      { kind: 'advance_ai' },
+    );
+    return;
+  }
+  if (pending.stage === 'before_entry') return;
+  delete s.pending_mostrissimo;
+  prepend(s, { kind: 'advance_ai' });
+}
+async function attemptAiMostrissimo(c: Context): Promise<boolean> {
+  const s = c.s;
+  if (s.last_mostrissimo_turn[0] === s.current_turn || !s.shared_mostrissimi.length) return false;
+  const resources = permanents(s, 0);
+  const candidates: { offered: CardInstance; card: CardData; required: number; score: number }[] = [];
+  for (const offered of s.shared_mostrissimi) {
+    const card = await getCardData(offered.card_id);
+    const required = Number(card.sacrifice_cost);
+    if (card.card_type !== 'mostrissimo' || !Number.isInteger(required) || required < 0 || required > 6 || resources.length < required) continue;
+    if (!legalPositions(s, 0, []).length && !units(s, 0).length) continue;
+    if (effects(card.effect_json).some(e => !['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff'].includes(e.type))) continue;
+    const costs = resources.map(item => item.kind === 'creature' ? (find(s, item.id)?.cell.attack ?? 0) * 2 + (find(s, item.id)?.cell.hp ?? 0) : 0.5).sort((a, b) => a - b);
+    const score = Number(card.attack ?? 0) * 2 + Number(card.hp ?? 1) - costs.slice(0, required).reduce((a, b) => a + b, 0);
+    if (score > 0) candidates.push({ offered, card, required, score });
+  }
+  candidates.sort((a, b) => b.score - a.score);
+  const pick = candidates[0];
+  if (!pick) return false;
+  s.last_mostrissimo_turn[0] = s.current_turn;
+  s.pending_mostrissimo = { player_index: 0, card_id: pick.card.id, offered_instance_id: pick.offered.instance_id, required: pick.required, paid: [], freed_positions: [], stage: 'paying' };
+  s.mostrissimo_result = null;
+  s.ai_progress!.actions_taken++;
+  log(c, 0, 'mostrissimo_start', `L’IA inizia l’evocazione di ${pick.card.name}: ${pick.required} sacrifici.`, { card_id: pick.card.id });
+  prepend(s, { kind: 'advance_ai' });
+  return true;
+}
 async function advanceAi(c: Context) {
   const s = c.s;
   if (s.status !== 'running' || !s.ai_progress) return;
@@ -520,6 +594,7 @@ async function advanceAi(c: Context) {
       prepend(s, { kind: 'declare_event', event: e }, { kind: 'advance_ai' }); return;
     }
   }
+  if (await attemptAiMostrissimo(c)) return;
   const mover = units(s, 0).find(u => !u.cell.tired && s.players[0].current_mana >= 1 && around(u.position).some(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length));
   if (mover) {
     const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemies(s, q, 0).length)!;
