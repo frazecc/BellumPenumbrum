@@ -1,3 +1,5 @@
+// js/game.js — Bellum Penumbrum, interfaccia partita v4.
+// Pubblicare solo con backend/types.ts v4, backend/engine.ts v4, SQL v4 e CSS v4.
 import { getAccessToken, getCurrentUser, signOut, usernameFromEmail } from './auth.js';
 
 const API = 'https://bellum-penumbrum-api.onrender.com';
@@ -15,14 +17,15 @@ const active = () => turn() && !busy && !pending() && !state?.pending_reaction &
 const inside = p => p.row >= 0 && p.row < 3 && p.col >= 0 && p.col < 3;
 const around = p => [{row:p.row-1,col:p.col},{row:p.row+1,col:p.col},{row:p.row,col:p.col-1},{row:p.row,col:p.col+1}].filter(inside);
 const eq = (a,b) => !!(a && b && a.row === b.row && a.col === b.col);
-const foes = p => around(p).filter(q => at(q)?.owner_index === 0);
+const isCreatureCell = c => c?.kind === 'creature';
+const foes = p => around(p).filter(q => isCreatureCell(at(q)) && at(q).owner_index === 0);
 const steps = p => around(p).filter(q => q.row !== 0 && !at(q));
 const escape = x => String(x ?? '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');
 const creature = d => ['monster','mostrissimo'].includes(d.card_type);
 const effects = d => Array.isArray(d?.effect_json?.effects) ? d.effect_json.effects : d?.effect_json?.type ? [d.effect_json] : [];
 const targetEffect = d => effects(d).find(e => e?.target === 'any_creature' || e?.type === 'return_hand');
 const factions = ['','CHI','INF','PES','BUL','GRO','CLO','IND'];
-const types = {monster:'MOSTRO',mostrissimo:'MOSTRISSIMO',sorcery:'STREGONERIA',instant:'ISTANTANEO',terraforma:'TERRAFORMA',aura:'AURA'};
+const types = {monster:'MOSTRO',mostrissimo:'MOSTRISSIMO',maledizione:'MALEDIZIONE',instant:'TRAPPOLA',terraforma:'TERRAFORMA',aura:'AURA'};
 const rarities = {common:'Comune',uncommon:'Non comune',rare:'Rara',ultra_rare:'Ultra rara',legendary:'Leggendaria'};
 const faction = d => {
   const code = String(d?.faction_code ?? factions[Number(d?.faction_id)] ?? 'IND').toLowerCase();
@@ -33,13 +36,13 @@ function cardHTML(d, mini = false, cell = null) {
   const cost = d.card_type === 'mostrissimo' ? `✦${Number(d.sacrifice_cost ?? 0)}` : `⚡${Number(d.mana_cost ?? 0)}`;
   const art = d.image_url ? `<img src="${escape(d.image_url)}" alt="Illustrazione di ${escape(d.name)}" loading="lazy">` : '<span class="game-card-art-placeholder">🎴</span>';
   const atk = cell?.attack ?? d.attack ?? 0, hp = cell?.hp ?? d.hp ?? 0;
-  if (mini) return `<article class="board-card ${cls}"><header class="board-card-titlebar"><span class="board-card-name">${escape(d.name)}</span><span class="board-card-cost">${cost}</span></header><div class="board-card-art">${art}</div><div class="board-card-type">${escape(types[d.card_type] ?? d.card_type)}</div><div class="board-card-effect">${escape(String(d.effect_text ?? '').replace(/\*\*/g,'').replace(/\s+/g,' ').slice(0,90))}</div><footer class="board-card-footer"><span>⚔ ${atk}</span><span>❤ ${hp}</span></footer></article>`;
+  if (mini) return `<article class="board-card ${cls}"><header class="board-card-titlebar"><span class="board-card-name">${escape(d.name)}</span><span class="board-card-cost">${cost}</span></header><div class="board-card-art">${art}</div><div class="board-card-type">${escape(types[d.card_type] ?? d.card_type)}</div><div class="board-card-effect">${escape(String(d.effect_text ?? '').replace(/\*\*/g,'').replace(/\s+/g,' ').slice(0,110))}</div>${creature(d) ? `<footer class="board-card-footer"><span>⚔ ${atk}</span><span>❤ ${hp}</span></footer>` : ''}</article>`;
   const rules = escape(d.effect_text || 'Nessun effetto.').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
   return `<article class="game-card ${cls}"><header class="game-card-titlebar"><span class="game-card-name">${escape(d.name)}</span><span class="game-card-cost">${cost}</span></header><div class="game-card-art">${art}</div><div class="game-card-type-row"><span>${escape(types[d.card_type] ?? d.card_type)}</span><span class="game-card-subtype">${escape(d.subtype ?? '')}</span></div><div class="game-card-rules">${rules}</div><div class="game-card-flavor">${escape(d.flavor_text ?? '')}</div><footer class="game-card-footer"><span class="game-card-rarity">${escape(rarities[d.rarity] ?? d.rarity ?? 'Comune')}</span>${creature(d) ? `<span class="game-card-stats"><span class="game-card-atk">⚔ ${atk}</span><span class="game-card-hp">❤ ${hp}</span></span>` : ''}</footer></article>`;
 }
 function targetAllowed(d,c) {
-  if (!c) return false;
-  if (d.card_type === 'aura') return c.owner_index === 1;
+  if (!isCreatureCell(c)) return false;
+  if (d.card_type === 'aura') return true;
   const e = targetEffect(d);
   if (!e) return false;
   if (['damage','damage_creature'].includes(e.type) && e.timing !== 'instant') return c.owner_index === 0;
@@ -48,29 +51,28 @@ function targetAllowed(d,c) {
 }
 function targets(d) {
   const found = [];
-  for (let r = 0; r < 3; r++) for (let col = 0; col < 3; col++) {
-    const cell = at({row:r,col});
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    const cell = at({row,col});
     if (targetAllowed(d,cell)) found.push(cell);
   }
   return found;
 }
 function permanents() {
   const found = [];
-  for (let r = 0; r < 3; r++) for (let col = 0; col < 3; col++) {
-    const c = at({row:r,col});
-    if (c?.owner_index !== 1) continue;
-    found.push({id:c.instance_id,card_id:c.card_id,type:'Creatura'});
-    for (const a of c.auras ?? []) found.push({id:a.instance_id,card_id:a.card_id,type:'Aura'});
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    const c = at({row,col});
+    if (!c) continue;
+    if (c.owner_index === 1) found.push({id:c.instance_id,card_id:c.card_id,type:c.kind === 'terraforma' ? 'Terraforma' : 'Creatura'});
+    if (isCreatureCell(c)) for (const a of c.auras ?? []) if (a.owner_index === 1) found.push({id:a.instance_id,card_id:a.card_id,type:'Aura'});
   }
-  if (me()?.field_spell) found.push({id:me().field_spell.instance_id,card_id:me().field_spell.card_id,type:'Terraforma'});
   return found;
 }
 function bossCells(p) {
   if (!p) return [];
   const found = [];
-  for (let r = 0; r < 3; r++) for (let col = 0; col < 3; col++) {
-    const pos = {row:r,col};
-    if (!at(pos) && (r === 2 || (r === 1 && (p.freed_positions ?? []).some(x => eq(x,pos))))) found.push(pos);
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    const pos = {row,col};
+    if (!at(pos) && (row === 2 || (row === 1 && (p.freed_positions ?? []).some(x => eq(x,pos))))) found.push(pos);
   }
   return found;
 }
@@ -88,8 +90,7 @@ async function api(path,options={}) {
       method:options.method ?? 'GET',
       headers:{Authorization:`Bearer ${token}`,...(options.body !== undefined ? {'Content-Type':'application/json'} : {})},
       body:options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      signal:abort.signal,
-      cache:'no-store',
+      signal:abort.signal,cache:'no-store',
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(json.error ?? `HTTP ${res.status}`);
@@ -122,40 +123,38 @@ function reactionDialog() {
   let el = $('reaction-dialog');
   if (el) return el;
   el = document.createElement('div'); el.id = 'reaction-dialog'; el.className = 'card-detail-overlay hidden';
-  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true');
-  el.setAttribute('aria-label','Finestra reattiva');
-  const stage = document.createElement('div'); stage.className = 'panel';
-  stage.style.cssText = 'width:min(94vw,560px);max-height:90dvh;overflow:auto;text-align:center;border-color:#d5a758;box-shadow:0 12px 48px #000';
+  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-label','Finestra reattiva');
+  const stage = document.createElement('div'); stage.className = 'panel'; stage.style.cssText = 'width:min(94vw,720px);max-height:90dvh;overflow:auto;text-align:center;border-color:#d5a758;box-shadow:0 12px 48px #000';
   const title = document.createElement('h2'); title.id = 'reaction-title'; title.textContent = 'Finestra reattiva';
   const text = document.createElement('p'); text.id = 'reaction-description';
-  const choices = document.createElement('div'); choices.id = 'reaction-choices';
-  choices.style.cssText = 'display:flex;gap:.5rem;flex-wrap:wrap;justify-content:center;align-items:stretch;margin:.7rem 0';
+  const choices = document.createElement('div'); choices.id = 'reaction-choices'; choices.style.cssText = 'display:flex;gap:.5rem;flex-wrap:wrap;justify-content:center;align-items:stretch;margin:.7rem 0';
   const actions = document.createElement('div'); actions.id = 'reaction-actions';
-  stage.append(title,text,choices,actions); el.append(stage); document.body.append(el);
-  return el;
+  stage.append(title,text,choices,actions); el.append(stage); document.body.append(el); return el;
 }
 function reactionDescription(e) {
   const names = {
+    upkeep_start:'Inizia il MANATENIMENTO avversario, prima di mana, risveglio e pesca.',
+    upkeep_end:'Il MANATENIMENTO avversario sta terminando, prima della fase principale.',
     hand_card:'L’avversario ha dichiarato una carta dalla mano.',
-    move:'L’avversario ha dichiarato un movimento.',
-    attack:'L’avversario ha dichiarato un attacco.',
+    move:'L’avversario ha dichiarato un movimento.',attack:'L’avversario ha dichiarato un attacco.',
     mostrissimo_sacrifice:'L’avversario ha dichiarato un sacrificio.',
-    mostrissimo_before_entry:'Il Mostrissimo è stato pagato e sta per entrare in campo.',
-    monster_etb:'Si sta attivando un effetto di ingresso di una creatura.',
+    mostrissimo_before_entry:'Il Mostrissimo ha pagato i sacrifici e sta per entrare nella cella scelta.',
+    monster_etb:'Sta per risolversi un ETB di una creatura avversaria.',
   };
   return names[e?.kind] ?? 'L’avversario ha dichiarato un’azione.';
 }
 async function renderReaction() {
   const el = reactionDialog(), r = reaction();
   if (!r || busy || flow?.kind === 'trap-target') { el.classList.add('hidden'); return; }
+  $('reaction-title').textContent = r.event?.kind === 'monster_etb' || r.event?.kind === 'mostrissimo_before_entry' ? 'Finestra NOPE / Trappola' : 'Finestra Trappola';
   $('reaction-description').textContent = reactionDescription(r.event);
   const choices = $('reaction-choices'); choices.replaceChildren();
   for (const instId of r.eligible_instance_ids ?? []) {
     const inst = me()?.hand?.find(x => x.instance_id === instId);
     if (!inst) continue;
     const d = await card(inst.card_id);
-    const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
-    b.style.cssText = 'width:105px;height:145px;flex:0 0 105px'; b.innerHTML = cardHTML(d,true);
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card reaction-card';
+    b.dataset.instanceId = inst.instance_id; b.dataset.cardId = d.id; b.innerHTML = cardHTML(d,true);
     b.setAttribute('aria-label',`Gioca ${d.name} in risposta`);
     b.onclick = () => beginTrap(inst,d).catch(fail); choices.append(b);
   }
@@ -178,52 +177,35 @@ async function beginTrap(inst,d) {
   }
   await chooseTrap({windowId:r.window_id,action:'play',cardInstanceId:inst.instance_id});
 }
-
-// Il pannello Cimitero legge le istanze gia' presenti nello stato partita.
-// Non invia richieste di modifica e non interferisce con le scelte di gioco.
 function graveyardDialog() {
   let el = $('graveyard-dialog');
   if (el) return el;
   el = document.createElement('div'); el.id = 'graveyard-dialog'; el.className = 'card-detail-overlay hidden';
-  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-labelledby','graveyard-title');
-  el.style.zIndex = '120';
-  const panel = document.createElement('div'); panel.className = 'panel';
-  panel.style.cssText = 'width:min(94vw,720px);max-height:88dvh;overflow:auto;border-color:#c6a774;text-align:center;box-shadow:0 12px 48px #000';
+  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-labelledby','graveyard-title'); el.style.zIndex = '120';
+  const panel = document.createElement('div'); panel.className = 'panel'; panel.style.cssText = 'width:min(94vw,720px);max-height:88dvh;overflow:auto;border-color:#c6a774;text-align:center;box-shadow:0 12px 48px #000';
   const title = document.createElement('h2'); title.id = 'graveyard-title';
-  const list = document.createElement('div'); list.id = 'graveyard-cards';
-  list.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:.55rem;margin:.7rem 0;max-height:60dvh;overflow:auto';
-  const actions = document.createElement('div'); actions.style.cssText = 'display:flex;justify-content:center';
-  actions.append(button('Chiudi',closeGraveyard));
+  const list = document.createElement('div'); list.id = 'graveyard-cards'; list.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:.55rem;margin:.7rem 0;max-height:60dvh;overflow:auto';
+  const actions = document.createElement('div'); actions.style.cssText = 'display:flex;justify-content:center'; actions.append(button('Chiudi',closeGraveyard));
   panel.append(title,list,actions); el.append(panel);
   el.addEventListener('click',e => { if (e.target === el) closeGraveyard(); });
-  document.body.append(el);
-  return el;
+  document.body.append(el); return el;
 }
 function closeGraveyard() { $('graveyard-dialog')?.classList.add('hidden'); }
 async function openGraveyard(owner) {
-  if (owner !== 0 && owner !== 1) return;
-  if (!state || busy) return;
-  const el = graveyardDialog();
-  const title = $('graveyard-title'), list = $('graveyard-cards');
+  if ((owner !== 0 && owner !== 1) || !state || busy) return;
+  const el = graveyardDialog(), title = $('graveyard-title'), list = $('graveyard-cards');
   const cards = state.players?.[owner]?.graveyard ?? [];
   title.textContent = `${owner === 1 ? 'Il tuo cimitero' : 'Cimitero dell’IA'} · ${cards.length}`;
   list.replaceChildren();
-  if (!cards.length) {
-    const empty = document.createElement('p'); empty.textContent = 'Cimitero vuoto.'; list.append(empty);
-  } else {
-    for (const inst of cards) {
-      const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
-      b.style.cssText = 'flex:0 0 100px;width:100px;height:145px';
-      try {
-        const d = await card(inst.card_id);
-        b.innerHTML = cardHTML(d,true);
-        b.setAttribute('aria-label',`Apri ${d.name} nel cimitero`);
-        b.onclick = () => { closeGraveyard(); inspect('grave',inst.card_id).catch(fail); };
-      } catch (error) {
-        b.textContent = 'Carta non caricabile'; b.disabled = true; console.warn(error);
-      }
-      list.append(b);
-    }
+  if (!cards.length) { const empty = document.createElement('p'); empty.textContent = 'Cimitero vuoto.'; list.append(empty); }
+  else for (const inst of cards) {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card'; b.style.cssText = 'flex:0 0 125px;width:125px;height:175px';
+    try {
+      const d = await card(inst.card_id); b.innerHTML = cardHTML(d,true);
+      b.setAttribute('aria-label',`Apri ${d.name} nel cimitero`);
+      b.onclick = () => { closeGraveyard(); inspect('grave',inst.card_id).catch(fail); };
+    } catch (error) { b.textContent = 'Carta non caricabile'; b.disabled = true; console.warn(error); }
+    list.append(b);
   }
   el.classList.remove('hidden');
 }
@@ -233,14 +215,10 @@ function wireGraveyards() {
     if (!box || box.dataset.graveyardReady) continue;
     box.dataset.graveyardReady = 'true'; box.setAttribute('role','button'); box.setAttribute('tabindex','0');
     box.setAttribute('aria-label',`Apri ${owner === 1 ? 'il tuo cimitero' : 'il cimitero dell’IA'}`);
-    box.style.cursor = 'pointer';
-    box.addEventListener('click',() => openGraveyard(owner).catch(fail));
-    box.addEventListener('keydown',e => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGraveyard(owner).catch(fail); }
-    });
+    box.style.cursor = 'pointer'; box.addEventListener('click',() => openGraveyard(owner).catch(fail));
+    box.addEventListener('keydown',e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGraveyard(owner).catch(fail); } });
   }
 }
-
 async function inspect(kind,id,extra={}) {
   if (busy || (reaction() && kind !== 'grave')) return;
   view = {kind,id,...extra};
@@ -249,13 +227,13 @@ async function inspect(kind,id,extra={}) {
   overlay(); $('detail-image').innerHTML = cardHTML(d,false,current.cell ?? null);
   const bar = $('detail-actions'); bar.replaceChildren();
   const add = (text,fn,disabled=false) => bar.append(button(text,fn,disabled));
-  if (kind === 'hand' && active()) add(d.card_type === 'monster' ? 'Evoca' : 'Gioca',() => beginCard(current.instanceId,d),Number(d.mana_cost) > me().current_mana || d.card_type === 'instant');
+  if (kind === 'hand' && active()) add(d.card_type === 'monster' ? 'Evoca' : d.card_type === 'terraforma' ? 'Colloca' : 'Gioca',() => beginCard(current.instanceId,d),!playable(d));
   if (kind === 'boss' && active() && state.last_mostrissimo_turn?.[1] !== state.current_turn) {
-    const cost = Number(d.sacrifice_cost), own = board().flat().filter(c => c?.owner_index === 1).length;
+    const cost = Number(d.sacrifice_cost), own = board().flat().filter(c => isCreatureCell(c) && c.owner_index === 1).length;
     const legal = Number.isInteger(cost) && cost >= 0 && cost <= 6 && permanents().length >= cost && (board()[2].some(c => !c) || (cost > 0 && own > 0));
     add(`Evoca · ${cost} sacrifici`,() => request('mostrissimo/start',{cardId:id},'Evocazione iniziata: non puoi annullare.'),!legal);
   }
-  if (kind === 'unit' && active() && current.cell?.owner_index === 1 && !current.cell.tired) {
+  if (kind === 'unit' && active() && isCreatureCell(current.cell) && current.cell.owner_index === 1 && !current.cell.tired) {
     const direct = foes(current.position).length === 0;
     add(direct ? 'Attacca direttamente IA' : 'Attacca · 0 mana',() => {
       if (direct) return request('attack',{attackerPosition:current.position,target:{type:'player',playerIndex:0}},'Attacco dichiarato.');
@@ -263,22 +241,27 @@ async function inspect(kind,id,extra={}) {
     });
     add('Muovi · 1 mana',() => { flow = {kind:'move',from:current.position}; close(); render().catch(fail); notice('Tocca una cella libera adiacente.','success'); },!me()?.current_mana || !steps(current.position).length);
   }
+  if (kind === 'unit' && isCreatureCell(current.cell) && current.cell.auras?.length) {
+    for (const aura of current.cell.auras) {
+      const a = await card(aura.card_id);
+      add(`Aura ${a.name}${aura.owner_index === 1 ? ' · tua' : ' · IA'}`,() => { close(); return inspect('aura',aura.card_id,{instanceId:aura.instance_id}); });
+    }
+  }
   if (kind === 'tribute' && pending() && pending().stage === 'paying' && pending().paid.length < pending().required) add('Conferma sacrificio',() => request('mostrissimo/sacrifice',{instanceId:current.instanceId},'Sacrificio dichiarato.'));
   add('Chiudi',close);
   $('card-detail-overlay').classList.remove('hidden'); document.body.classList.add('detail-open');
 }
 async function beginCard(instanceId,d) {
-  if (!active() || d.card_type === 'instant') return;
-  close(); flow = {kind:'hand',instanceId,id:d.id,step:d.card_type === 'monster' ? 'cell' : (d.card_type === 'aura' || targetEffect(d)) ? 'target' : 'immediate'};
+  if (!playable(d)) return;
+  close(); flow = {kind:'hand',instanceId,id:d.id,step:(d.card_type === 'monster' || d.card_type === 'terraforma') ? 'cell' : (d.card_type === 'aura' || targetEffect(d)) ? 'target' : 'immediate'};
   if (flow.step === 'immediate') return request('play-card',{cardInstanceId:instanceId,options:{}},'Carta dichiarata.');
   await render(); notice(flow.step === 'cell' ? 'Scegli una cella libera della tua riga.' : 'Scegli una creatura bersaglio.','success');
 }
 function playable(d) {
   if (!active() || d.card_type === 'mostrissimo' || d.card_type === 'instant' || Number(d.mana_cost) > me().current_mana) return false;
-  if (d.card_type === 'monster' && !board()[2].some(c => !c)) return false;
-  if (d.card_type === 'terraforma' && me().field_spell) return false;
+  if ((d.card_type === 'monster' || d.card_type === 'terraforma') && !board()[2].some(c => !c)) return false;
   if (d.card_type === 'aura' && !targets(d).length) return false;
-  if (!creature(d) && targetEffect(d) && !targets(d).length) return false;
+  if (!creature(d) && d.card_type !== 'aura' && targetEffect(d) && !targets(d).length) return false;
   return true;
 }
 async function drawBoard() {
@@ -286,22 +269,23 @@ async function drawBoard() {
   root.replaceChildren();
   const p = pending(), legal = p?.stage === 'paying' && p.paid.length === p.required ? bossCells(p) : [];
   const d = flow?.id ? cache.get(flow.id) : null;
-  for (let r = 0; r < 3; r++) {
-    const line = document.createElement('div'); line.className = `board-row ${['ai-row','center-row','human-row'][r]}`;
+  for (let row = 0; row < 3; row++) {
+    const line = document.createElement('div'); line.className = `board-row ${['ai-row','center-row','human-row'][row]}`;
     for (let col = 0; col < 3; col++) {
-      const pos = {row:r,col}, c = at(pos), b = document.createElement('button');
+      const pos = {row,col}, c = at(pos), b = document.createElement('button');
       b.type = 'button'; b.className = 'board-cell';
       let definition = null;
       if (c) try { definition = await card(c.card_id); } catch(e) { console.warn(e); }
       b.classList.add(c ? c.owner_index === 1 ? 'human-card' : 'ai-card' : 'empty');
-      if (c?.tired) b.classList.add('tired');
+      if (c?.kind === 'terraforma') b.classList.add('terraforma-cell');
+      if (isCreatureCell(c) && c.tired) b.classList.add('tired');
       if (flow?.kind === 'move' && steps(flow.from).some(x => eq(x,pos))) b.classList.add('valid-move');
       if (flow?.kind === 'attack' && foes(flow.from).some(x => eq(x,pos))) b.classList.add('valid-target');
-      if (flow?.kind === 'hand' && flow.step === 'cell' && r === 2 && !c) b.classList.add('valid-summon');
+      if (flow?.kind === 'hand' && flow.step === 'cell' && row === 2 && !c) b.classList.add('valid-summon');
       if (['hand','boss-target','trap-target'].includes(flow?.kind) && (flow?.step === 'target' || flow?.kind !== 'hand') && d && targetAllowed(d,c)) b.classList.add('valid-target');
       if (legal.some(x => eq(x,pos))) b.classList.add('valid-summon');
-      b.setAttribute('aria-label',c ? `${definition?.name ?? 'Creatura'} ${c.owner_index === 1 ? 'Tu' : 'IA'} ATK ${c.attack} HP ${c.hp}` : `Cella [${r},${col}]`);
-      b.innerHTML = c && definition ? cardHTML(definition,true,c) + `<span class="cell-coordinate">[${r},${col}]</span>` : `<span class="empty-label">${['Riga IA','Centro','Riga Tu'][r]}<br>[${r},${col}]</span>`;
+      b.setAttribute('aria-label',c ? `${definition?.name ?? 'Permanente'} ${c.owner_index === 1 ? 'Tu' : 'IA'}${isCreatureCell(c) ? ` ATK ${c.attack} HP ${c.hp}` : ', Terraforma non attaccabile'}${isCreatureCell(c) && c.auras?.length ? `, ${c.auras.length} Aura` : ''}` : `Cella [${row},${col}]`);
+      b.innerHTML = c && definition ? cardHTML(definition,true,c) + (isCreatureCell(c) && c.auras?.length ? `<span class="cell-aura-count" title="Aure assegnate">✧ ${c.auras.length}</span>` : '') + `<span class="cell-coordinate">[${row},${col}]</span>` : `<span class="empty-label">${['Riga IA','Centro','Riga Tu'][row]}<br>[${row},${col}]</span>`;
       b.onclick = () => boardClick(pos).catch(fail); line.append(b);
     }
     root.append(line);
@@ -313,7 +297,8 @@ async function drawHand() {
   for (const inst of me()?.hand ?? []) {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
     try {
-      const d = await card(inst.card_id); b.innerHTML = cardHTML(d,true); b.disabled = !active();
+      const d = await card(inst.card_id); b.innerHTML = cardHTML(d,true);
+      b.disabled = !state || busy || !!reaction();
       if (playable(d)) b.classList.add('playable');
       b.setAttribute('aria-label',`Apri ${d.name}${playable(d) ? ', giocabile' : ''}`);
       b.onclick = () => inspect('hand',inst.card_id,{instanceId:inst.instance_id});
@@ -341,13 +326,14 @@ async function drawBoss() {
   }
   const p = pending(); if (!p) return;
   const info = document.createElement('p'); info.className = 'tribute-progress';
-  info.textContent = p.stage === 'etb' ? 'Risoluzione degli effetti di ingresso…' : p.stage === 'before_entry' ? 'Evocazione dichiarata: attendi la reazione.' : `Sacrifici ${p.paid.length}/${p.required}. Non puoi annullare.`;
+  info.textContent = p.stage === 'etb' ? 'Risoluzione degli ETB…' : p.stage === 'before_entry' ? 'Evocazione dichiarata: attendi la reazione.' : `Sacrifici ${p.paid.length}/${p.required}. Non puoi annullare.`;
   panel.append(info);
   if (p.stage !== 'paying' || reaction()) return;
   if (p.paid.length < p.required) {
     const list = document.createElement('div'); list.className = 'tribute-list';
     for (const item of permanents()) {
-      const d = await card(item.card_id), b = document.createElement('button'); b.type = 'button'; b.textContent = `${item.type}: ${d.name}`; b.disabled = busy;
+      const d = await card(item.card_id), b = document.createElement('button');
+      b.type = 'button'; b.textContent = `${item.type}: ${d.name}`; b.disabled = busy;
       b.onclick = () => inspect('tribute',item.card_id,{instanceId:item.id}); list.append(b);
     }
     panel.append(list);
@@ -361,22 +347,17 @@ function controls() {
   disable('cancel-selection-button',busy || !flow || (!!pending() && flow?.kind !== 'trap-target'));
   disable('choose-attack-button',true); disable('choose-move-button',true);
   $('creature-action-panel')?.classList.add('hidden');
-  if ($('selection-instructions')) $('selection-instructions').textContent = flow?.kind === 'trap-target' ? 'Scegli il bersaglio della Trappola evidenziato.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Tocca una miniatura per aprire la carta.';
+  if ($('selection-instructions')) $('selection-instructions').textContent = flow?.kind === 'trap-target' ? 'Scegli il bersaglio della Trappola.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Leggi nome e tipo delle carte; tocca per aprire il testo completo.';
 }
 async function render() {
   const set = (id,x) => { if ($(id)) $(id).textContent = String(x); };
   set('match-status',state?.status === 'finished' ? 'Terminata' : state ? 'In corso' : 'Nessuna partita');
   set('turn-status',state ? `${state.current_turn} · ${state.active_player_index === 1 ? 'Tu' : 'IA'}` : '—');
-  set('phase-status',state?.phase === 'main' ? 'Principale' : state?.phase ?? '—');
+  set('phase-status',state?.phase === 'upkeep' ? 'MANATENIMENTO' : state?.phase === 'main' ? 'Principale' : state?.phase ?? '—');
   set('player-life',me()?.life ?? 20); set('player-mana',`${me()?.current_mana ?? 0} / ${me()?.max_mana ?? 0}`);
   set('player-hand-count',me()?.hand?.length ?? 0); set('player-deck-count',me()?.deck?.length ?? 0); set('player-graveyard-count',me()?.graveyard?.length ?? 0);
   set('opponent-life',them()?.life ?? 20); set('opponent-current-mana',them()?.current_mana ?? 0); set('opponent-max-mana',them()?.max_mana ?? 0);
   set('opponent-hand-count',them()?.hand?.length ?? 0); set('opponent-deck-count',them()?.deck?.length ?? 0); set('opponent-graveyard-count',them()?.graveyard?.length ?? 0);
-  for (const [id,owner,name] of [['player-field-spell',me(),'Tu'],['opponent-field-spell',them(),'IA']]) {
-    let text = `${name}: Nessuna Terraforma`;
-    if (owner?.field_spell) try { text = `${name}: ${(await card(owner.field_spell.card_id)).name}`; } catch {}
-    set(id,text);
-  }
   await drawBoard(); await drawHand(); await drawBoss(); controls(); await renderReaction();
 }
 async function logs() {
@@ -410,7 +391,7 @@ async function boardClick(pos) {
       if (!targetAllowed(d,c)) return notice('Bersaglio della Trappola non valido.','error');
       return chooseTrap({windowId:r.window_id,action:'play',cardInstanceId:flow.instanceId,targetInstanceId:c.instance_id});
     }
-    return notice('Scegli una Trappola nella finestra reattiva oppure passa.','error');
+    return notice('Scegli una Trappola oppure passa.','error');
   }
   if (!turn()) return;
   const p = pending();
@@ -438,8 +419,9 @@ async function boardClick(pos) {
     if (flow.step === 'cell') {
       if (c || pos.row !== 2) return notice('Scegli una cella libera della tua riga.','error');
       flow.position = pos;
-      if (targetEffect(d) && targets(d).length) { flow.step = 'target'; await render(); notice('Cella scelta. Tocca il bersaglio ETB.','success'); return; }
-      return request('play-card',{cardInstanceId:flow.instanceId,options:{position:pos}},'Creatura dichiarata.');
+      if (d.card_type === 'monster' && targetEffect(d) && targets(d).length) { flow.step = 'target'; await render(); notice('Cella scelta. Tocca il bersaglio ETB.','success'); return; }
+      if (d.card_type === 'terraforma' && targetEffect(d) && targets(d).length) { flow.step = 'target'; await render(); notice('Cella scelta. Tocca il bersaglio dell’effetto di ingresso.','success'); return; }
+      return request('play-card',{cardInstanceId:flow.instanceId,options:{position:pos}},'Carta dichiarata.');
     }
     if (flow.step === 'target') {
       if (!targetAllowed(d,c)) return notice('Bersaglio non valido.','error');
@@ -493,7 +475,7 @@ async function init() {
   const prior = localStorage.getItem('bellum:last-match');
   if (prior) try {
     const result = await api(`/match/${encodeURIComponent(prior)}`);
-    if (result.state?.state_version === 3 && result.state.players?.[1]?.user_id === user.id) {
+    if (result.state?.state_version === 4 && result.state.players?.[1]?.user_id === user.id) {
       matchId = prior; state = result.state; await render(); await logs(); notice('Partita precedente ripristinata.','success');
     }
   } catch(e) { console.warn('Ripristino non disponibile',e); }
