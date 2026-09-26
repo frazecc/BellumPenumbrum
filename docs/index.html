@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="css/style.css" />
     <link rel="stylesheet" href="css/compact.css" />
     <link rel="stylesheet" href="css/layout.css" />
+    <link rel="stylesheet" href="css/hud-log.css" />
   </head>
   <body>
     <noscript>Bellum Penumbrum richiede JavaScript per funzionare.</noscript>
@@ -47,9 +48,17 @@
             <button id="logout-button" class="secondary-button" type="button">Esci</button>
           </div>
         </header>
-        <section class="battlefield panel" aria-label="Scacchiera tattica">
-          <div id="shared-board" class="shared-board"></div>
-        </section>
+        <section class="battlefield panel" aria-label="Scacchiera tattica"><div id="shared-board" class="shared-board"></div></section>
+        <aside class="arena-sidebar" aria-label="Offerta ed eventi della partita">
+          <section class="logs-panel panel" aria-label="Cronologia della partita">
+            <details class="log-disclosure">
+              <summary>Ultimi eventi · apri cronologia</summary>
+              <ol id="match-logs" class="match-logs"></ol>
+            </details>
+            <button id="refresh-button" class="secondary-button" type="button" disabled>Aggiorna</button>
+          </section>
+          <p id="game-message" class="game-message" role="status" aria-live="polite"></p>
+        </aside>
         <section class="player-summary-panel panel" aria-label="Giocatore e azioni del turno">
           <h2 id="player-title" class="player-hud-name">Tu</h2>
           <div class="resource-grid">
@@ -69,11 +78,6 @@
           <div class="section-heading"><h2>La tua mano</h2><p id="selection-instructions" class="muted">Tocca una miniatura per aprire la carta.</p></div>
           <div id="player-hand" class="hand"></div>
         </section>
-        <section class="logs-panel panel" aria-label="Log della partita">
-          <div class="section-heading"><h2>Log partita</h2><button id="refresh-button" class="secondary-button" type="button" disabled>Aggiorna</button></div>
-          <ol id="match-logs" class="match-logs"></ol>
-        </section>
-        <p id="game-message" class="game-message" role="status" aria-live="polite"></p>
       </section>
     </main>
     <script type="module" src="js/auth.js"></script>
