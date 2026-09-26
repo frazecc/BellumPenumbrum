@@ -1,0 +1,29 @@
+/* Bellum Penumbrum: HUD simmetrico IA / giocatore. Caricare per ultimo. */
+.game-screen>.hud-top{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:.25rem;padding:.3rem .45rem}
+.game-screen>.hud-top .hud-controls{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.4rem;min-width:0}
+.game-screen>.hud-top .hud-status{display:flex;align-items:center;justify-content:center;gap:.45rem;flex-wrap:wrap}
+.game-screen>.hud-top .hud-tools{display:flex;align-items:center;justify-content:center;gap:.3rem}
+.game-screen>.hud-top .hud-tools button{min-height:1.65rem;padding:.12rem .35rem;font-size:.72rem}
+.game-screen .arena-hud{display:grid;grid-template-columns:minmax(0,1fr) minmax(130px,1fr) minmax(0,1fr);grid-template-areas:'left name right';align-items:center;gap:.5rem;width:100%;min-width:0;padding:.3rem .45rem;border:1px solid #57515e;border-radius:.48rem;background:linear-gradient(100deg,#161923,#26232e,#161923)}
+.game-screen .arena-hud.ai-hud{border-top:2px solid #aa5976}
+.game-screen .arena-hud.player-hud{border-bottom:2px solid #638dba}
+.game-screen .arena-hud .hud-left{grid-area:left;justify-self:start}
+.game-screen .arena-hud .hud-right{grid-area:right;justify-self:end}
+.game-screen .arena-hud .hud-group{display:flex;align-items:center;gap:.28rem;min-width:0}
+.game-screen .arena-hud .hud-name{grid-area:name;min-width:0;margin:0;overflow:hidden;text-align:center;text-overflow:ellipsis;white-space:nowrap;color:#f2e6d3;font:normal clamp(.85rem,1.5vw,1.3rem)/1.1 'IM Fell English',Georgia,serif}
+.game-screen .arena-hud.ai-hud .hud-name{color:#ffc3d1}
+.game-screen .arena-hud.player-hud .hud-name{color:#c4ddff}
+.game-screen .arena-hud .hud-value{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:2.55rem;min-height:2.3rem;padding:.1rem .22rem;border:1px solid #545660;border-radius:.28rem;background:#11151f;text-align:center}
+.game-screen .arena-hud .hud-value .hud-label{color:#b5b5c1;font-size:.56rem;line-height:1;text-transform:uppercase;white-space:nowrap}
+.game-screen .arena-hud .hud-value strong{color:#f9f4e8;font-size:1rem;line-height:1.16;font-variant-numeric:tabular-nums}
+.game-screen .arena-hud .hud-value.life strong{color:#ff9ca9}
+.game-screen .arena-hud .hud-value.mana strong{color:#acd2ff}
+.game-screen .arena-hud .hud-value.deck strong{color:#f3d68e}
+.game-screen .arena-hud .hud-value.grave strong{color:#d1bade}
+.game-screen>.player-summary-panel{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:.2rem;padding:.22rem .4rem}
+.game-screen>.player-summary-panel .action-panel{align-self:center;justify-content:center;border:0;padding:0;margin:0;gap:.3rem}
+.game-screen>.player-summary-panel .action-panel button{min-height:1.7rem;font-size:.71rem}
+.game-screen .hud-source-only{position:absolute!important;width:1px!important;height:1px!important;margin:-1px!important;padding:0!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+@media(max-width:900px){.game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(110px,.8fr) minmax(0,1fr);gap:.22rem;padding:.22rem}.game-screen .arena-hud .hud-group{gap:.15rem}.game-screen .arena-hud .hud-value{min-width:2.2rem;min-height:2rem;padding:.08rem .12rem}.game-screen .arena-hud .hud-value strong{font-size:.9rem}.game-screen .arena-hud .hud-value .hud-label{font-size:.5rem}}
+@media(max-width:560px){.game-screen>.hud-top{gap:.12rem;padding:.12rem .2rem}.game-screen>.hud-top .hud-controls{gap:.2rem}.game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(85px,.82fr) minmax(0,1fr);gap:.08rem;padding:.13rem}.game-screen .arena-hud .hud-name{font-size:.83rem}.game-screen .arena-hud .hud-value{min-width:1.65rem;min-height:1.65rem;border-radius:.2rem;padding:.04rem}.game-screen .arena-hud .hud-value .hud-label{font-size:.42rem}.game-screen .arena-hud .hud-value strong{font-size:.75rem}.game-screen .arena-hud .hud-group{gap:.08rem}.game-screen>.player-summary-panel{gap:.12rem;padding:.1rem}.game-screen>.player-summary-panel .action-panel button{min-height:1.55rem;font-size:.64rem}}
+@media(max-width:380px){.game-screen .arena-hud{grid-template-columns:minmax(0,1fr) minmax(70px,.8fr) minmax(0,1fr)}.game-screen .arena-hud .hud-value{min-width:1.5rem}.game-screen .arena-hud .hud-name{font-size:.73rem}}
