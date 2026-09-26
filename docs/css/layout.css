@@ -1,0 +1,32 @@
+/* Bellum Penumbrum: HUD compatto. Caricare dopo style.css e compact.css. */
+.game-screen{grid-template-columns:minmax(0,1fr) minmax(150px,240px);grid-template-rows:auto minmax(0,1fr) auto auto;gap:.3rem;min-height:0;height:calc(100dvh - .8rem)}
+.game-screen>.hud-top{grid-column:1/-1;grid-row:1;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.45rem;padding:.25rem .5rem;min-height:0;text-align:center}
+.game-screen>.hud-top .hud-status{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:.45rem;border:0;background:none;box-shadow:none;padding:0;min-width:0}
+.game-screen>.hud-top .hud-status>div{display:flex;align-items:baseline;gap:.2rem;font-size:.78rem;white-space:nowrap}
+.game-screen>.hud-top .status-label{font-size:.68rem;color:#b1acb2}
+.game-screen>.hud-top .hud-opponent{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.35rem;min-width:0;margin:0;padding:0;border:0;background:none;box-shadow:none}
+.game-screen>.hud-top .hud-opponent h2{margin:0;font-family:'Roboto Condensed',Arial,sans-serif;font-size:.84rem;font-weight:800;color:#ffc0cb}
+.game-screen>.hud-top .hud-opponent .resource-grid{gap:.4rem;font-size:.76rem}
+.game-screen>.hud-top .hud-opponent .resource-grid strong{color:#fff}
+.game-screen>.hud-top .hud-tools{display:flex;gap:.3rem;align-items:center;justify-content:center}
+.game-screen>.hud-top #new-match-button,.game-screen>.hud-top #logout-button{min-height:1.8rem;padding:.18rem .45rem;font-size:.72rem;white-space:nowrap}
+.game-screen>.battlefield{grid-column:1;grid-row:2;min-height:0;min-width:0;padding:.25rem;display:flex;align-items:center;justify-content:center}
+.game-screen>.battlefield .shared-board{width:auto;height:100%;max-width:100%;max-height:100%;aspect-ratio:1/1;margin:auto;min-width:0;min-height:0}
+.game-screen>#mostrissimo-panel{grid-column:2;grid-row:2;min-height:0;min-width:0}
+.game-screen>.player-summary-panel{grid-column:1/-1;grid-row:3;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.35rem;min-height:0;padding:.18rem .45rem;text-align:center}
+.game-screen>.player-summary-panel .player-hud-name{margin:0;color:#b9dbff;font-family:'Roboto Condensed',Arial,sans-serif;font-size:.85rem;font-weight:800}
+.game-screen>.player-summary-panel .resource-grid{gap:.42rem;font-size:.8rem;justify-content:center}
+.game-screen>.player-summary-panel .resource-grid strong{color:#fff}
+.game-screen>.player-summary-panel .action-panel{display:flex;gap:.3rem;align-items:center;justify-content:center;flex-wrap:wrap;margin:0;padding:0;border:0;border-left:1px solid #65606a;border-radius:0;background:none;box-shadow:none;padding-left:.4rem}
+.game-screen>.player-summary-panel .action-panel button{min-height:1.85rem;padding:.2rem .45rem;font-size:.73rem}
+.game-screen>.player-summary-panel .action-panel #end-turn-button{min-width:85px}
+.game-screen>.hand-section:not(#mostrissimo-panel){grid-column:1/-1;grid-row:4;min-height:0;padding:.18rem .45rem}
+.game-screen>.hand-section .section-heading{justify-content:center;gap:.5rem;margin:0 0 .1rem}
+.game-screen>.hand-section .section-heading h2{margin:0;font-family:'Roboto Condensed',Arial,sans-serif;font-size:.8rem;font-weight:800}
+.game-screen>.hand-section .hand{height:clamp(85px,14dvh,125px);justify-content:safe center}
+.game-screen>.hand-section .hand-card{flex-basis:clamp(72px,11dvh,103px)}
+.game-screen>.logs-panel,.game-screen>.creature-action-panel{display:none!important}
+.game-screen>.game-message{z-index:15}
+@media(max-width:900px){.game-screen{grid-template-columns:minmax(0,1fr) minmax(90px,130px)}.game-screen>.hud-top .hud-opponent .resource-grid{font-size:.71rem}.game-screen>.hand-section .hand{height:clamp(76px,13dvh,112px)}.game-screen>.hand-section .hand-card{flex-basis:clamp(66px,10dvh,92px)}}
+@media(max-width:560px){.game-screen{grid-template-columns:minmax(0,1fr) 80px;gap:.17rem;height:calc(100dvh - .3rem)}.game-screen>.hud-top{gap:.18rem;padding:.12rem .2rem}.game-screen>.hud-top .hud-status{gap:.22rem}.game-screen>.hud-top .hud-status>div{font-size:.65rem}.game-screen>.hud-top .hud-status>div:nth-child(3){display:none}.game-screen>.hud-top .hud-opponent{gap:.2rem}.game-screen>.hud-top .hud-opponent h2{font-size:.69rem}.game-screen>.hud-top .hud-opponent .resource-grid{gap:.23rem;font-size:.65rem}.game-screen>.hud-top .hud-tools button{min-height:1.6rem!important;padding:.08rem .23rem!important;font-size:.6rem!important}.game-screen>.player-summary-panel{gap:.2rem;padding:.12rem .2rem}.game-screen>.player-summary-panel .player-hud-name{font-size:.72rem}.game-screen>.player-summary-panel .resource-grid{gap:.23rem;font-size:.66rem}.game-screen>.player-summary-panel .action-panel{gap:.16rem;padding-left:.2rem}.game-screen>.player-summary-panel .action-panel button{min-height:1.6rem;padding:.08rem .2rem;font-size:.62rem}.game-screen>.player-summary-panel .action-panel #end-turn-button{min-width:66px}.game-screen>.hand-section .hand{height:clamp(70px,12dvh,94px)}.game-screen>.hand-section .hand-card{flex-basis:clamp(62px,9dvh,81px)}.game-screen>#mostrissimo-panel{padding:.18rem}.game-screen>#mostrissimo-panel h2{font-size:.7rem}}
+@media(max-height:650px){.game-screen>.hud-top .hud-status>div:nth-child(3){display:none}.game-screen>.hand-section .hand{height:64px}.game-screen>.hand-section .hand-card{flex-basis:58px}}
