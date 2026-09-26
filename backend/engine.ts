@@ -699,13 +699,12 @@ async function deck(): Promise<CardInstance[]> {
   });
   const monsters = playable.filter(x => x.type === 'monster');
   const low = monsters.filter(x => x.cost <= 2), mid = monsters.filter(x => x.cost >= 2 && x.cost <= 4), high = monsters.filter(x => x.cost >= 5);
-  const nonmonsters = playable.filter(x => x.type !== 'monster' && x.type !== 'instant');
   const instants = playable.filter(x => x.type === 'instant' && effects(x.raw).length);
-  if (!low.length || !mid.length || !high.length || !instants.length || !nonmonsters.length) throw new Error('Catalogo insufficiente per la curva mana 2,5–4');
+  if (!low.length || !mid.length || !high.length || !instants.length) throw new Error('Catalogo insufficiente per la curva mana 2,5–4');
   const pick = <T>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
   for (let attempt = 0; attempt < 500; attempt++) {
     const bosses = high.filter(x => x.boss);
-    const chosen = [pick(bosses.length ? bosses : high), pick(low), pick(low), pick(mid), pick(mid), pick(monsters), pick(instants), pick(nonmonsters)];
+    const chosen = [pick(bosses.length ? bosses : high), pick(low), pick(low), pick(mid), pick(mid), pick(mid), pick(instants), pick(instants)];
     while (chosen.length < 10) chosen.push(pick(playable));
     const avg = chosen.reduce((sum, x) => sum + x.cost, 0) / 10;
     if (avg >= 2.5 && avg <= 4) return shuffle(chosen.map(x => ({ instance_id: randomUUID(), card_id: x.id })));
