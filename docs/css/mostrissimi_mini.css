@@ -1,0 +1,120 @@
+/* css/mostrissimi_mini.css — tre Mostrissimi sempre visibili nell'offerta.
+   Caricare DOPO hud.css. Le carte restano apribili a grandezza piena. */
+.game-screen #mostrissimo-panel .boss-offer,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-offer {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  align-items:start;
+  justify-content:stretch;
+  gap:clamp(2px,.45vw,7px);
+  width:100%;
+  min-width:0;
+  min-height:0;
+  max-width:100%;
+  max-height:none;
+  padding:.2rem;
+  overflow:visible;
+}
+.game-screen #mostrissimo-panel .boss-card,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card {
+  display:block;
+  flex:none;
+  width:100%;
+  min-width:0;
+  height:auto;
+  aspect-ratio:3/4;
+  max-height:155px;
+  padding:0;
+  overflow:hidden;
+  border:2px solid #cbbd9b;
+  border-radius:.32rem;
+  background:#25232e;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card {
+  display:block;
+  position:relative;
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  border:0;
+  border-radius:0;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-art,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-art {
+  display:block;
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  margin:0;
+  border:0;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-art img,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-art img {
+  display:block;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-titlebar {
+  display:block;
+  position:absolute;
+  z-index:2;
+  top:0;
+  right:0;
+  left:0;
+  min-height:0;
+  padding:.12rem;
+  border:0;
+  background:linear-gradient(#080911d9,#08091166 65%,transparent);
+  pointer-events:none;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-name,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-name {
+  display:none;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-cost,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-cost {
+  display:grid;
+  position:static;
+  float:right;
+  place-items:center;
+  min-width:clamp(1.25rem,2.5vw,1.8rem);
+  min-height:clamp(1.25rem,2.5vw,1.8rem);
+  padding:0 .12rem;
+  border:1px solid #ffe8ae;
+  border-radius:50%;
+  background:#251835ec;
+  color:#fff;
+  font-size:clamp(.65rem,1.1vw,.85rem);
+  font-weight:900;
+  text-shadow:0 1px #000;
+}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-type,
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-effect,
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-footer,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-type,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-effect,
+.game-screen>.arena-sidebar>#mostrissimo-panel .boss-card>.board-card>.board-card-footer {
+  display:none;
+}
+.game-screen #mostrissimo-panel .boss-card:focus-visible {
+  outline:3px solid #ffce64;
+  outline-offset:2px;
+}
+@media(max-width:600px){
+  .game-screen #mostrissimo-panel .boss-offer,
+  .game-screen>.arena-sidebar>#mostrissimo-panel .boss-offer {
+    display:grid;
+    grid-template-columns:repeat(3,minmax(0,1fr));
+    overflow:visible;
+  }
+  .game-screen #mostrissimo-panel .boss-card,
+  .game-screen>.arena-sidebar>#mostrissimo-panel .boss-card {
+    width:100%;
+    height:auto;
+    max-height:145px;
+  }
+}
