@@ -1,0 +1,79 @@
+/* Bellum Penumbrum: miniature tattiche solo illustrazione + valori.
+   Caricato dopo style.css; la carta grande resta invariata. */
+:root{--compact-shadow:0 2px 5px rgba(0,0,0,.9);--compact-chip:rgba(10,12,19,.9)}
+
+/* La pagina usa la superficie visibile senza sprecare spazio nei pannelli. */
+.game-screen{grid-template-rows:auto auto auto minmax(0,1fr) auto auto auto}
+.game-screen .battlefield,.game-screen #mostrissimo-panel{min-height:0}
+.game-screen .battlefield-heading{justify-content:center;width:100%}
+.game-screen .battlefield-heading h2{margin:0}
+.game-screen .opponent-summary,.game-screen .player-summary-panel{justify-content:center;text-align:center}
+.game-screen .opponent-summary .resource-grid,.game-screen .player-summary-panel .resource-grid{justify-content:center}
+.game-screen .hand-section:not(#mostrissimo-panel){text-align:center}
+.game-screen .hand-section .section-heading{justify-content:center}
+.game-screen .hand{justify-content:safe center}
+.game-screen #mostrissimo-panel .boss-offer{justify-content:safe center}
+
+/* La scacchiera deve stare nel riquadro disponibile ed essere quadrata. */
+.game-screen .battlefield{justify-content:flex-start}
+.game-screen .shared-board{width:auto;height:100%;max-width:100%;max-height:100%;aspect-ratio:1/1;flex:0 1 auto;min-width:0;min-height:0;margin:auto}
+.game-screen .board-row{grid-template-columns:repeat(3,minmax(0,1fr));min-width:0;min-height:0}
+.game-screen .board-cell{width:100%;height:100%;aspect-ratio:1/1;min-width:0;min-height:0;padding:0;overflow:hidden;border-radius:.24rem}
+.game-screen .board-cell.empty{place-items:center}
+
+/* Miniatura di campo: foto a tutta superficie, senza nome, mana o cornice interna. */
+.game-screen .board-cell:not(.empty)>.board-card{display:block;position:relative;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;border:0;border-radius:0;background:#22252e;box-shadow:none}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-titlebar,
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-type,
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-effect{display:none!important}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-art{position:absolute;inset:0;width:100%;height:100%;border:0;background:#353746}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-art img{display:block;width:100%;height:100%;object-fit:cover}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-art .game-card-art-placeholder{display:grid;width:100%;height:100%;place-items:center}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer{display:flex;position:absolute;z-index:2;right:0;bottom:0;left:0;align-items:flex-end;justify-content:space-between;gap:2px;min-height:0;padding:0 .12rem .12rem;border:0;background:linear-gradient(0deg,rgba(0,0,0,.65),transparent 95%);color:#fff;font-size:clamp(.82rem,1.8vw,1.35rem);font-weight:900;line-height:1;text-shadow:var(--compact-shadow);pointer-events:none}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer>span{display:grid;min-width:1.5em;min-height:1.5em;place-items:center;padding:.12em .18em;border:1px solid rgba(255,255,255,.62);border-radius:.36em;background:var(--compact-chip);box-shadow:0 1px 4px #0009;white-space:nowrap}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer>span:first-child{border-color:#f0b88b;background:rgba(96,39,20,.94)}
+.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer>span:last-child{border-color:#ffb0b8;background:rgba(105,31,47,.94)}
+.game-screen .board-cell .cell-coordinate{display:none}
+.game-screen .board-cell.tired>.board-card{opacity:.72;filter:grayscale(.38)}
+.game-screen .board-cell.valid-target,.game-screen .board-cell.valid-move,.game-screen .board-cell.valid-summon,.game-screen .board-cell.selected-creature{outline-offset:-3px}
+
+/* Mano: solo illustrazione e costo mana chiarissimo, senza obbligo di aprire la carta. */
+.game-screen .hand{height:clamp(75px,12dvh,106px);padding:.36rem .3rem .45rem;align-items:center}
+.game-screen .hand-card{position:relative;flex:0 0 clamp(65px,10dvh,90px);height:100%;overflow:visible;border-radius:.35rem}
+.game-screen .hand-card>.board-card{display:block;position:relative;width:100%;height:100%;overflow:hidden;border:2px solid var(--faction-color);border-radius:.35rem;background:#22252e;box-shadow:0 2px 5px #0009}
+.game-screen .hand-card>.board-card>.board-card-titlebar,
+.game-screen .hand-card>.board-card>.board-card-type,
+.game-screen .hand-card>.board-card>.board-card-effect,
+.game-screen .hand-card>.board-card>.board-card-footer{display:none!important}
+.game-screen .hand-card>.board-card>.board-card-art{position:absolute;inset:0;width:100%;height:100%;border:0}
+.game-screen .hand-card>.board-card>.board-card-art img{width:100%;height:100%;object-fit:cover}
+.game-screen .hand-card>.board-card::after{position:absolute;z-index:2;top:.14rem;right:.14rem;display:grid;min-width:2.05rem;min-height:2.05rem;place-items:center;padding:.15rem;border:2px solid #ffe1a1;border-radius:99px;color:#fff;background:#141a2df0;box-shadow:0 2px 5px #000b;content:attr(data-unused);pointer-events:none}
+/* Il costo è già presente nel titolo della miniatura: lo spostiamo sopra la foto. */
+.game-screen .hand-card>.board-card>.board-card-titlebar{display:block!important;position:absolute;z-index:3;top:.12rem;right:.12rem;width:auto;padding:0;border:0;background:none;pointer-events:none}
+.game-screen .hand-card>.board-card>.board-card-titlebar>.board-card-name{display:none}
+.game-screen .hand-card>.board-card>.board-card-titlebar>.board-card-cost{display:grid;min-width:2.1rem;min-height:2.1rem;place-items:center;padding:.08rem .18rem;border:2px solid #ffe1a1;border-radius:50%;color:#fff;background:#17213af5;box-shadow:0 2px 6px #000c;font:900 clamp(.9rem,2.3vw,1.15rem)/1 'Roboto Condensed',Arial,sans-serif;text-shadow:0 1px #000}
+.game-screen .hand-card>.board-card::after{content:none}
+.game-screen .hand-card.playable{transform:translateY(-2px);filter:drop-shadow(0 0 7px #f6d57d) drop-shadow(0 0 5px #f6d57d)}
+.game-screen .hand-card.playable>.board-card{border-color:#ffe49b;box-shadow:0 0 0 1px #fff4cc,0 0 10px #f5d970}
+
+/* Offerta: ritratti minimali con costo in sacrifici immediatamente visibile. */
+.game-screen #mostrissimo-panel .boss-card{position:relative;overflow:hidden;border:1px solid #cbbd9b;border-radius:.3rem}
+.game-screen #mostrissimo-panel .boss-card>.board-card{display:block;position:relative;width:100%;height:100%;border:0;border-radius:0;overflow:hidden}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-art{position:absolute;inset:0;width:100%;height:100%}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-art img{width:100%;height:100%;object-fit:cover}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar{display:block!important;position:absolute;z-index:2;top:.1rem;right:.1rem;width:auto;padding:0;border:0;background:none}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-name{display:none}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-cost{display:grid;min-width:1.6rem;min-height:1.6rem;place-items:center;padding:.1rem;border:1px solid #fff1be;border-radius:50%;background:#291d39ef;color:#fff;font-weight:900;font-size:.78rem;text-shadow:0 1px #000}
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-type,
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-effect,
+.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-footer{display:none!important}
+
+/* La carta espansa mantiene integralmente il suo design e i comandi sotto. */
+.card-detail-overlay .game-card{border-width:.32rem}
+.card-detail-overlay .game-card-titlebar,.card-detail-overlay .game-card-type-row,.card-detail-overlay .game-card-rules,.card-detail-overlay .game-card-footer{display:flex}
+.card-detail-overlay .game-card-rules{display:block}
+.card-detail-overlay .detail-actions{justify-content:center}
+
+@media(max-width:900px){.game-screen .shared-board{height:100%;width:auto;max-width:100%;max-height:100%}.game-screen #mostrissimo-panel .boss-offer{justify-content:safe center}.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer{font-size:clamp(.68rem,2.5vw,1rem)}}
+@media(max-width:520px){.game-screen .hand{height:72px}.game-screen .hand-card{flex-basis:64px}.game-screen .hand-card>.board-card>.board-card-titlebar>.board-card-cost{min-width:1.85rem;min-height:1.85rem;font-size:.94rem}.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer{font-size:clamp(.58rem,3vw,.85rem)}.game-screen .board-cell:not(.empty)>.board-card>.board-card-footer>span{min-width:1.4em;min-height:1.4em;padding:.05em .11em}.game-screen #mostrissimo-panel .boss-card>.board-card>.board-card-titlebar>.board-card-cost{min-width:1.4rem;min-height:1.4rem;font-size:.7rem}}
+@media(max-height:700px){.game-screen .hand{height:58px}.game-screen .hand-card{flex-basis:52px}.game-screen .hand-card>.board-card>.board-card-titlebar>.board-card-cost{min-width:1.7rem;min-height:1.7rem;font-size:.82rem}}
