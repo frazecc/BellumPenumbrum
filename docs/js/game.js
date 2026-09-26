@@ -3,6 +3,7 @@ const API = 'https://bellum-penumbrum-api.onrender.com';
 const EMPTY = [[null,null,null],[null,null,null],[null,null,null]];
 let state = null, matchId = null, selectedCard = null, selectedUnit = null, mode = null, pendingTarget = null, busy = false, initialized = false;
 const cache = new Map();
+let bossChoice = null, bossTribute = null;
 const $ = id => document.getElementById(id);
 const board = () => state?.board?.rows ?? EMPTY;
 const at = p => board()[p.row]?.[p.col] ?? null;
@@ -99,6 +100,97 @@ async function drawHand() {
     root.append(button);
   }
 }
+function bossTargets(card) {
+  const e=effect(card);
+  if (!e || (e.target!=='any_creature' && e.type!=='return_hand')) return [];
+  const cells=[];
+  for (let row=0;row<3;row++) for (let col=0;col<3;col++) {
+    const c=board()[row][col]; if (!c) continue;
+    if ((e.type==='damage' || e.type==='damage_creature') && c.owner_index!==0) continue;
+    if (e.type==='heal' && c.owner_index!==1) continue;
+    cells.push(c);
+  }
+  return cells;
+}
+function bossPermanents() {
+  const result=[];
+  for (let row=0;row<3;row++) for (let col=0;col<3;col++) {
+    const c=board()[row][col]; if (c?.owner_index!==1) continue;
+    result.push({id:c.instance_id,card_id:c.card_id,type:'Creatura'});
+    for (const aura of c.auras??[]) result.push({id:aura.instance_id,card_id:aura.card_id,type:'Aura'});
+  }
+  if (me()?.field_spell) result.push({id:me().field_spell.instance_id,card_id:me().field_spell.card_id,type:'Terraforma'});
+  return result;
+}
+async function bossAction(endpoint,body,success) {
+  if (busy || !matchId) return;
+  setBusy(true);
+  try {
+    state=(await api(`/match/${matchId}/mostrissimo/${endpoint}`,{method:'POST',body})).state;
+    bossTribute=null; clear();
+    if (!state.pending_mostrissimo) bossChoice=null;
+    await render(); try { await logs(); } catch(e) { console.warn(e); }
+    notice(state.status==='finished'?(state.winner_index===1?'HAI VINTO!':'HAI PERSO!'):state.mostrissimo_result?.outcome==='failed'?state.mostrissimo_result.message:success,state.mostrissimo_result?.outcome==='failed'?'error':'success');
+  } catch(e) { fail(e); } finally { setBusy(false); }
+}
+async function renderBoss() {
+  let panel=$('mostrissimo-panel');
+  if (!panel) {
+    panel=document.createElement('section'); panel.id='mostrissimo-panel'; panel.className='hand-section panel';
+    panel.setAttribute('aria-label','Mostrissimi disponibili');
+    const before=document.querySelector('.logs-panel') ?? $('game-message');
+    before?.parentNode?.insertBefore(panel,before);
+  }
+  panel.replaceChildren();
+  const heading=document.createElement('h2'); heading.textContent='Mostrissimi · Offerta condivisa'; panel.append(heading);
+  if (!state) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const pending=state.pending_mostrissimo;
+  const choices=state.shared_mostrissimi??[];
+  const eligible=()=>bossPermanents().length;
+  for (const inst of choices) {
+    const card=await getCard(inst.card_id);
+    const b=document.createElement('button'); b.type='button'; b.className='hand-card';
+    if (bossChoice===inst.card_id || pending?.card_id===inst.card_id) b.classList.add('selected-hand-card');
+    b.textContent=`${card.name} · ${card.sacrifice_cost} sacrifici · ${card.attack??0}/${card.hp??1} · ${card.effect_text??''}`;
+    b.disabled=busy || !myTurn() || Boolean(pending) || state.last_mostrissimo_turn?.[1]===state.current_turn;
+    b.onclick=()=>{bossChoice=inst.card_id; render().catch(fail);}; panel.append(b);
+  }
+  if (!pending && bossChoice && choices.some(x=>x.card_id===bossChoice)) {
+    const card=await getCard(bossChoice), cost=Number(card.sacrifice_cost);
+    const ownCreatures=()=>{let count=0; for(const row of board())for(const c of row)if(c?.owner_index===1)count++;return count;};
+    const hasHomeSpace=board()[2].some(c=>!c);
+    const can=cost>=0&&cost<=6&&eligible()>=cost&&(hasHomeSpace||(cost>0&&ownCreatures()>0))&&state.last_mostrissimo_turn?.[1]!==state.current_turn;
+    if (can) {
+      const go=document.createElement('button');go.className='primary-button';go.textContent='Evoca';go.disabled=busy;
+      go.onclick=()=>bossAction('start',{cardId:bossChoice},'Evocazione iniziata: non puoi annullare.');panel.append(go);
+    }
+    const cancel=document.createElement('button');cancel.className='secondary-button';cancel.textContent='Annulla';cancel.onclick=()=>{bossChoice=null;render().catch(fail);};panel.append(cancel);
+  }
+  if (pending?.player_index===1) {
+    const text=document.createElement('p');text.textContent=`Sacrifici confermati: ${pending.paid.length}/${pending.required}. Procedura non annullabile.`;panel.append(text);
+    if (pending.paid.length<pending.required) {
+      for(const permanent of bossPermanents()) {
+        const card=await getCard(permanent.card_id);
+        const b=document.createElement('button');b.type='button';b.className='hand-card';
+        b.textContent=`${permanent.type}: ${card.name}${bossTribute===permanent.id?' · selezionato':''}`;
+        b.disabled=busy;b.onclick=()=>{bossTribute=permanent.id;render().catch(fail);};panel.append(b);
+      }
+      const confirm=document.createElement('button');confirm.type='button';confirm.className='primary-button';confirm.textContent='Conferma sacrificio';confirm.disabled=!bossTribute||busy;
+      confirm.onclick=()=>bossAction('sacrifice',{instanceId:bossTribute},'Sacrificio risolto.');panel.append(confirm);
+    } else {
+      const card=await getCard(pending.card_id), targets=bossTargets(card);
+      const instructions=document.createElement('p');instructions.textContent='Sacrifici completi. Scegli il bersaglio ETB, se richiesto, poi clicca una cella libera della tua riga o liberata dai sacrifici.';panel.append(instructions);
+      if (targets.length) {
+        const select=document.createElement('select');select.id='boss-effect-target';select.setAttribute('aria-label','Bersaglio effetto di ingresso');
+        const empty=document.createElement('option');empty.value='';empty.textContent='Scegli il bersaglio ETB';select.append(empty);
+        for(const c of targets) {const d=await getCard(c.card_id),o=document.createElement('option');o.value=c.instance_id;o.textContent=`${d.name} (${c.owner_index===1?'Tu':'IA'})`;select.append(o);}
+        panel.append(select);
+      }
+    }
+  }
+}
+
 async function render() {
   const set=(id,value)=>{ if ($(id)) $(id).textContent=String(value); };
   set('match-status',state?.status==='finished'?'Terminata':state?'In corso':'Nessuna partita');
@@ -107,7 +199,7 @@ async function render() {
   set('player-hand-count',me()?.hand?.length??0); set('player-deck-count',me()?.deck?.length??0); set('player-graveyard-count',me()?.graveyard?.length??0);
   set('opponent-life',them()?.life??20); set('opponent-hand-count',them()?.hand?.length??0); set('opponent-deck-count',them()?.deck?.length??0); set('opponent-graveyard-count',them()?.graveyard?.length??0);
   for (const [id,owner,label] of [['player-field-spell',me(),'Tu'],['opponent-field-spell',them(),'IA']]) { let text=`${label}: Nessuna Terraforma`; if (owner?.field_spell) try { text=`${label}: ${(await getCard(owner.field_spell.card_id)).name}`; } catch {} set(id,text); }
-  await drawBoard(); await drawHand(); control();
+  await drawBoard(); await drawHand(); await renderBoss(); control();
 }
 async function logs() { if (!$('match-logs') || !matchId) return; const {logs:events}=await api(`/match/${matchId}/logs?limit=100`); $('match-logs').replaceChildren(); for (const e of events??[]) { const li=document.createElement('li'); li.textContent=e.log_data?.description??e.log_data?.action_type??'Evento'; $('match-logs').append(li); } $('match-logs').scrollTop=$('match-logs').scrollHeight; }
 async function action(endpoint, body, success) {
@@ -118,6 +210,22 @@ async function action(endpoint, body, success) {
 async function boardClick(pos) {
   if (!myTurn() || busy) return;
   const c=at(pos);
+  const pendingBoss = state?.pending_mostrissimo;
+  if (pendingBoss?.player_index === 1) {
+    if (pendingBoss.paid.length < pendingBoss.required) {
+      if (!c || c.owner_index !== 1) return notice('Seleziona un tuo permanente da sacrificare.','error');
+      bossTribute=c.instance_id; await render(); notice('Permanente selezionato: premi Conferma sacrificio.','success'); return;
+    }
+    const card = await getCard(pendingBoss.card_id);
+    const targetedEffect = effect(card);
+    const requiresTarget = targetedEffect?.target === 'any_creature' || targetedEffect?.type === 'return_hand';
+    if (c) return notice('Seleziona una cella libera. Il bersaglio ETB si sceglie dal pannello Mostrissimi.','error');
+    if (pos.row !== 2 && !(pendingBoss.freed_positions??[]).some(q=>eq(q,pos))) return notice('Cella non valida per questa evocazione.','error');
+    const targetId = document.getElementById('boss-effect-target')?.value || null;
+    if (requiresTarget && !targetId && bossTargets(card).length) return notice('Seleziona prima un bersaglio ETB dal pannello.','error');
+    await bossAction('complete',{position:pos,...(targetId?{targetInstanceId:targetId}:{})},'Mostrissimo evocato.'); return;
+  }
+
   if (selectedCard) {
     const inst=me().hand.find(x=>x.instance_id===selectedCard); if (!inst) { clear(); return render(); }
     const d=await getCard(inst.card_id);
@@ -141,7 +249,7 @@ async function boardClick(pos) {
 }
 async function newMatch() {
   if (busy) return; setBusy(true); notice('Creazione partita…');
-  try { const result=await api('/match/create',{method:'POST',body:{}}); matchId=result.match_id; state=result.state; clear(); localStorage.setItem('bellum:last-match',matchId); await render(); try { await logs(); } catch(e) { console.warn(e); } notice('Partita pronta: scegli una carta e clicca una cella della riga Tu.','success'); }
+  try { bossChoice=null; bossTribute=null; const result=await api('/match/create',{method:'POST',body:{}}); matchId=result.match_id; state=result.state; clear(); localStorage.setItem('bellum:last-match',matchId); await render(); try { await logs(); } catch(e) { console.warn(e); } notice('Partita pronta: scegli una carta e clicca una cella della riga Tu.','success'); }
   catch(e) { fail(e); } finally { setBusy(false); }
 }
 async function init() {
