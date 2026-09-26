@@ -6,10 +6,9 @@ const url = process.env.SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_KEY;
 if (!url || !key) throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY');
 const db = createClient(url, key);
-const N = 3;
 const other = (p: PlayerIndex): PlayerIndex => p === 0 ? 1 : 0;
 const label = (p: PlayerIndex) => p === 1 ? 'Tu' : 'L’IA';
-const valid = (p: Position) => Number.isInteger(p.row) && Number.isInteger(p.col) && p.row >= 0 && p.row < N && p.col >= 0 && p.col < N;
+const valid = (p: Position) => Number.isInteger(p.row) && Number.isInteger(p.col) && p.row >= 0 && p.row < 3 && p.col >= 0 && p.col < 3;
 const adjacent = (a: Position, b: Position) => Math.abs(a.row - b.row) + Math.abs(a.col - b.col) === 1;
 const around = (p: Position): Position[] => [{ row: p.row - 1, col: p.col }, { row: p.row + 1, col: p.col }, { row: p.row, col: p.col - 1 }, { row: p.row, col: p.col + 1 }].filter(valid);
 const home = (p: PlayerIndex) => p === 0 ? 0 : 2;
@@ -20,7 +19,7 @@ const at = (s: GameState, p: Position) => s.board.rows[p.row][p.col];
 const put = (s: GameState, p: Position, c: BoardCell | null) => { s.board.rows[p.row][p.col] = c; };
 const units = (s: GameState, owner: PlayerIndex) => {
   const result: { position: Position; cell: BoardCell }[] = [];
-  for (let row = 0; row < N; row++) for (let col = 0; col < N; col++) {
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
     const cell = s.board.rows[row][col];
     if (cell?.owner_index === owner) result.push({ position: { row, col }, cell });
   }
@@ -69,7 +68,7 @@ export async function getCardData(id: string): Promise<CardData> {
   return { ...data, faction_code: f && typeof f === 'object' && 'code' in f ? String(f.code) : 'IND' } as CardData;
 }
 function locate(s: GameState, id: string) {
-  for (let row = 0; row < N; row++) for (let col = 0; col < N; col++) {
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
     const cell = s.board.rows[row][col];
     if (cell?.instance_id === id) return { position: { row, col }, cell };
   }
@@ -87,7 +86,7 @@ function chosenTarget(s: GameState, owner: PlayerIndex, effect: EffectDefinition
   return selected;
 }
 async function clearLoop(id: string, s: GameState) {
-  for (let row = 0; row < N; row++) for (let col = 0; col < N; col++) {
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
     const cell = s.board.rows[row][col];
     if (cell) { s.players[cell.owner_index].graveyard.push(instance(cell), ...cell.auras); s.board.rows[row][col] = null; }
   }
@@ -120,8 +119,6 @@ function winner(s: GameState): PlayerIndex | null {
   if (s.players[1].life <= 0) return 0;
   return null;
 }
-// Ogni singolo tentativo di pesca senza carte costa esattamente 2 PV.
-// La funzione non conclude direttamente la partita: il chiamante salva o chiude lo stato.
 async function draw(id: string, s: GameState, recipient: PlayerIndex, amount: number): Promise<number> {
   let taken = 0;
   for (let i = 0; i < amount; i++) {
@@ -247,20 +244,26 @@ async function deck(): Promise<CardInstance[]> {
   }
   throw new Error('Impossibile generare un mazzo con curva mana 2,5–4 e due Istantanei');
 }
+async function offer(): Promise<{ shared: CardInstance[]; remaining: string[] }> {
+  const { data, error } = await db.from('cards').select('id').eq('card_type', 'mostrissimo');
+  if (error || !data) throw new Error(`Catalogo Mostrissimi non disponibile: ${error?.message ?? 'nessun risultato'}`);
+  const ids = shuffle(data.map(row => String(row.id)));
+  if (!ids.length) throw new Error('Il catalogo non contiene Mostrissimi');
+  return { shared: ids.slice(0, 3).map(card_id => ({ card_id, instance_id: randomUUID() })), remaining: ids.slice(3) };
+}
 function player(index: PlayerIndex, userId: string | null, cards: CardInstance[]): PlayerState {
   return { player_index: index, user_id: userId, life: 20, max_mana: 0, current_mana: 0, deck: cards, hand: [], graveyard: [], extra_deck: [], color_counters: { CHI: 0, INF: 0, PES: 0, BUL: 0, GRO: 0, CLO: 0, IND: 0 }, field_spell: null };
 }
 export async function createNewMatch(userId: string): Promise<{ matchId: string; state: GameState }> {
-  const [aiCards, humanCards] = await Promise.all([deck(), deck()]);
+  const [aiCards, humanCards, catalogue] = await Promise.all([deck(), deck(), offer()]);
   const { data, error } = await db.from('matches').insert({ player_id: userId, opponent_type: 'ai', opponent_name: 'IA Bellum Penumbrum', player_won: null, turns_count: 0, duration_seconds: 0 }).select('id').single();
   if (error || !data) throw new Error(`Creazione partita: ${error?.message ?? 'nessun ID'}`);
   const matchId = String(data.id);
   const ai = player(0, null, aiCards), human = player(1, userId, humanCards);
-  // La mano iniziale è assegnata durante la preparazione, non sono tentativi di pesca.
   for (let i = 0; i < 4; i++) ai.hand.push(ai.deck.shift()!);
   for (let i = 0; i < 3; i++) human.hand.push(human.deck.shift()!);
   human.max_mana = human.current_mana = 1;
-  const state: GameState = { state_version: 2, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null };
+  const state: GameState = { state_version: 2, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null, shared_mostrissimi: catalogue.shared, remaining_mostrissimi: catalogue.remaining, used_mostrissimi: [], last_mostrissimo_turn: {}, mostrissimo_result: null };
   const inserted = await db.from('game_state').insert({ match_id: matchId, state_json: state, current_turn: 1, current_phase: 2, last_updated: new Date().toISOString() });
   if (inserted.error) throw new Error(`Creazione stato: ${inserted.error.message}`);
   await log(matchId, state, -1, 'match_create', 'Partita iniziata: tu hai 3 carte e 1 mana; l’IA ha 4 carte.');
@@ -270,6 +273,113 @@ export async function getMatchState(id: string) { return load(id); }
 function assertTurn(s: GameState, p: PlayerIndex) {
   if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
   if (s.pending_mostrissimo) throw new Error('Completa prima l’evocazione del Mostrissimo');
+}
+function legalMostrissimoPositions(s: GameState, p: PlayerIndex, freed: Position[]): Position[] {
+  const result: Position[] = [];
+  for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+    const position = { row, col };
+    if (at(s, position)) continue;
+    if (row === home(p) || (freed.some(q => q.row === row && q.col === col) && allowed(p, row))) result.push(position);
+  }
+  return result;
+}
+function permanents(s: GameState, p: PlayerIndex): { id: string; kind: 'creature' | 'aura' | 'field'; position?: Position }[] {
+  const result: { id: string; kind: 'creature' | 'aura' | 'field'; position?: Position }[] = [];
+  for (const { position, cell } of units(s, p)) {
+    result.push({ id: cell.instance_id, kind: 'creature', position });
+    for (const aura of cell.auras) result.push({ id: aura.instance_id, kind: 'aura', position });
+  }
+  if (s.players[p].field_spell) result.push({ id: s.players[p].field_spell.instance_id, kind: 'field' });
+  return result;
+}
+async function failSummon(id: string, s: GameState, message: string) {
+  delete s.pending_mostrissimo;
+  s.mostrissimo_result = { outcome: 'failed', message };
+  await log(id, s, -1, 'mostrissimo_failed', message);
+  await saveGameState(id, s);
+}
+export async function startMostrissimoSummon(id: string, p: PlayerIndex, cardId: string): Promise<GameState> {
+  const s = await load(id); assertTurn(s, p);
+  if (s.last_mostrissimo_turn?.[p] === s.current_turn) throw new Error('Hai già tentato un’evocazione di Mostrissimo in questo turno');
+  if (!s.shared_mostrissimi?.some(c => c.card_id === cardId)) throw new Error('Mostrissimo non presente nell’offerta condivisa');
+  const card = await getCardData(cardId);
+  if (card.card_type !== 'mostrissimo') throw new Error('La carta selezionata non è un Mostrissimo');
+  const required = Number(card.sacrifice_cost);
+  if (!Number.isInteger(required) || required < 0 || required > 6) throw new Error('Costo in sacrifici non valido');
+  if (permanents(s, p).length < required) throw new Error('Non hai abbastanza permanenti per iniziare l’evocazione');
+  if (!legalMostrissimoPositions(s, p, []).length && !units(s, p).length) throw new Error('Nessuna cella legale per evocare');
+  s.last_mostrissimo_turn ??= {};
+  s.last_mostrissimo_turn[p] = s.current_turn;
+  s.pending_mostrissimo = { player_index: p, card_id: cardId, required, paid: [], freed_positions: [] };
+  s.mostrissimo_result = null;
+  await log(id, s, p, 'mostrissimo_start', `${label(p)} inizia l’evocazione di ${card.name}: ${required} permanenti.`, { card_id: card.id });
+  await saveGameState(id, s); return s;
+}
+export async function payMostrissimoSacrifice(id: string, p: PlayerIndex, instanceId: string): Promise<GameState> {
+  const s = await load(id);
+  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
+  const pending = s.pending_mostrissimo;
+  if (!pending || pending.player_index !== p || pending.paid.length >= pending.required) throw new Error('Nessun sacrificio richiesto');
+  const selected = permanents(s, p).find(x => x.id === instanceId);
+  if (!selected) throw new Error('Permanente non tuo oppure non più presente');
+  if (selected.kind === 'field') {
+    const field = s.players[p].field_spell!;
+    s.players[p].field_spell = null;
+    s.players[p].graveyard.push(field);
+  } else if (selected.kind === 'aura') {
+    const cell = at(s, selected.position!)!;
+    const index = cell.auras.findIndex(a => a.instance_id === instanceId);
+    s.players[p].graveyard.push(cell.auras.splice(index, 1)[0]);
+  } else {
+    const pos = selected.position!;
+    pending.freed_positions.push(pos);
+    await destroy(id, s, pos, p);
+  }
+  pending.paid.push(instanceId);
+  await log(id, s, p, 'mostrissimo_sacrifice', `Sacrificio ${pending.paid.length}/${pending.required}: ${selected.kind}.`, { instance_id: instanceId, position: selected.position ?? null });
+  const won = winner(s);
+  if (won !== null) { await finish(id, s, won, 'PV esauriti durante i sacrifici.'); return s; }
+  if (pending.paid.length < pending.required && permanents(s, p).length < pending.required - pending.paid.length) {
+    await failSummon(id, s, 'Evocazione fallita: non hai abbastanza permanenti per pagare i sacrifici restanti.'); return s;
+  }
+  if (pending.paid.length === pending.required && !legalMostrissimoPositions(s, p, pending.freed_positions).length) {
+    await failSummon(id, s, 'Evocazione fallita: nessuna cella legale.'); return s;
+  }
+  await saveGameState(id, s); return s;
+}
+export async function completeMostrissimoSummon(id: string, p: PlayerIndex, position: Position, targetId: string | null): Promise<GameState> {
+  const s = await load(id);
+  if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
+  const pending = s.pending_mostrissimo;
+  if (!pending || pending.player_index !== p) throw new Error('Nessuna evocazione in corso');
+  if (pending.paid.length !== pending.required) throw new Error('Prima completa tutti i sacrifici');
+  const legal = legalMostrissimoPositions(s, p, pending.freed_positions);
+  if (!legal.length) { await failSummon(id, s, 'Evocazione fallita: nessuna cella legale.'); return s; }
+  if (!valid(position) || !legal.some(q => q.row === position.row && q.col === position.col)) throw new Error('Cella di evocazione non legale');
+  const offered = s.shared_mostrissimi?.find(c => c.card_id === pending.card_id);
+  if (!offered) throw new Error('Mostrissimo non più presente nell’offerta');
+  const card = await getCardData(pending.card_id);
+  const onPlay = effects(card.effect_json);
+  const supported = new Set(['draw', 'discard', 'heal', 'damage', 'damage_creature', 'return_hand', 'buff']);
+  if (onPlay.some(e => !supported.has(e.type))) throw new Error('Effetto del Mostrissimo non ancora supportato');
+  if (targetId && !onPlay.some(e => (e.target === 'any_creature' || e.type === 'return_hand') && eligible(s, p, e).some(x => x.cell.instance_id === targetId))) throw new Error('Bersaglio non valido');
+  s.shared_mostrissimi = s.shared_mostrissimi!.filter(c => c.instance_id !== offered.instance_id);
+  s.used_mostrissimi ??= [];
+  s.used_mostrissimi.push(card.id);
+  const replacement = s.remaining_mostrissimi?.shift();
+  if (replacement) s.shared_mostrissimi.push({ card_id: replacement, instance_id: randomUUID() });
+  delete s.pending_mostrissimo;
+  put(s, position, { instance_id: offered.instance_id, card_id: card.id, owner_index: p, attack: Number(card.attack ?? 0), hp: Number(card.hp ?? 1), max_hp: Number(card.hp ?? 1), tired: !keyword(card, 'iperattivo'), auras: [] });
+  s.players[p].color_counters[card.faction_code] = (s.players[p].color_counters[card.faction_code] ?? 0) + 1;
+  s.mostrissimo_result = { outcome: 'summoned', message: `${card.name} è stato evocato.` };
+  await log(id, s, p, 'mostrissimo_summoned', `${label(p)} evoca ${card.name}.`, { card_id: card.id, instance_id: offered.instance_id, position });
+  for (const effect of onPlay) {
+    const chosen = targetId && eligible(s, p, effect).some(x => x.cell.instance_id === targetId) ? targetId : null;
+    await resolve(id, s, p, other(p), card, effect, chosen, true);
+    const won = winner(s);
+    if (won !== null) { await finish(id, s, won, 'PV esauriti dopo l’ingresso del Mostrissimo.'); return s; }
+  }
+  await saveGameState(id, s); return s;
 }
 export async function playCard(id: string, p: PlayerIndex, cardInstanceId: string, options: PlayCardOptions = {}): Promise<GameState> {
   const s = await load(id); assertTurn(s, p);
@@ -351,7 +461,7 @@ export async function attack(id: string, p: PlayerIndex, from: Position, target:
 }
 async function start(id: string, p: PlayerIndex): Promise<GameState> {
   const s = await load(id);
-  s.active_player_index = p; s.phase = 'upkeep'; s.anti_loop_counter = 0;
+  s.active_player_index = p; s.phase = 'upkeep'; s.anti_loop_counter = 0; s.mostrissimo_result = null;
   if (p === 1) s.current_turn++;
   const player = s.players[p]; player.max_mana = Math.min(6, player.max_mana + 1); player.current_mana = player.max_mana;
   for (const { cell } of units(s, p)) cell.tired = false;
