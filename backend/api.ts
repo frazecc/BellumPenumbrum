@@ -8,6 +8,9 @@ import {
   getMatchState,
   moveCreature,
   playCard,
+  startMostrissimoSummon,
+  payMostrissimoSacrifice,
+  completeMostrissimoSummon,
 } from './engine.js';
 import type {
   AttackTarget,
@@ -209,6 +212,33 @@ apiRouter.post('/match/:id/play-card', async (req: Request, res: Response) => {
       error: errorMessage(error),
     });
   }
+});
+
+apiRouter.post('/match/:id/mostrissimo/start', async (req: Request, res: Response) => {
+  try {
+    const matchId = requiredString(req.params.id, 'ID partita');
+    await assertMatchOwner(matchId, await requireAuth(req));
+    const cardId = requiredString(objectValue(req.body).cardId, 'ID Mostrissimo');
+    res.json({ state: await startMostrissimoSummon(matchId, 1, cardId) });
+  } catch (error) { res.status(400).json({ error: errorMessage(error) }); }
+});
+apiRouter.post('/match/:id/mostrissimo/sacrifice', async (req: Request, res: Response) => {
+  try {
+    const matchId = requiredString(req.params.id, 'ID partita');
+    await assertMatchOwner(matchId, await requireAuth(req));
+    const instanceId = requiredString(objectValue(req.body).instanceId, 'ID permanente');
+    res.json({ state: await payMostrissimoSacrifice(matchId, 1, instanceId) });
+  } catch (error) { res.status(400).json({ error: errorMessage(error) }); }
+});
+apiRouter.post('/match/:id/mostrissimo/complete', async (req: Request, res: Response) => {
+  try {
+    const matchId = requiredString(req.params.id, 'ID partita');
+    await assertMatchOwner(matchId, await requireAuth(req));
+    const body = objectValue(req.body);
+    const position = positionValue(body.position, 'Cella di evocazione');
+    const targetId = body.targetInstanceId === undefined ? null : requiredString(body.targetInstanceId, 'Bersaglio');
+    res.json({ state: await completeMostrissimoSummon(matchId, 1, position, targetId) });
+  } catch (error) { res.status(400).json({ error: errorMessage(error) }); }
 });
 
 apiRouter.post('/match/:id/move', async (req: Request, res: Response) => {

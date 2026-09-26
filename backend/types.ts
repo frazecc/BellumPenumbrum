@@ -65,6 +65,14 @@ export type PlayerState = {
 export type Position = { row: number; col: number };
 export type AttackTarget = { type: 'creature'; position: Position } | { type: 'player'; playerIndex: PlayerIndex };
 export type PlayCardOptions = { position?: Position; targetInstanceId?: string };
+export type PendingMostrissimo = {
+  player_index: PlayerIndex;
+  card_id: string;
+  required: number;
+  paid: string[];
+  freed_positions: Position[];
+};
+export type MostrissimoResult = { outcome: 'failed' | 'summoned'; message: string };
 export type GameState = {
   state_version: 2;
   match_id: string;
@@ -76,6 +84,12 @@ export type GameState = {
   phase: TurnPhase;
   anti_loop_counter: number;
   winner_index: PlayerIndex | null;
+  shared_mostrissimi?: CardInstance[];
+  remaining_mostrissimi?: string[];
+  used_mostrissimi?: string[];
+  pending_mostrissimo?: PendingMostrissimo;
+  last_mostrissimo_turn?: Partial<Record<PlayerIndex, number>>;
+  mostrissimo_result?: MostrissimoResult | null;
 };
 export type MatchLogEntry = {
   turn: number;

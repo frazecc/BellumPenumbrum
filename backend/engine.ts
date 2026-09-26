@@ -185,19 +185,22 @@ async function effectReturnHand(c: Context) {
   await log(c.id, c.state, c.owner, 'effect_return_hand', `${c.card.name}: una creatura torna in mano.`);
 }
 async function effectBuff(c: Context) {
+  const detail = c.effect as EffectDefinition & { stat?: string; duration?: string };
+  if (c.effect.target === 'all_creatures' && detail.stat === 'hp' && detail.duration === 'permanent') {
+    for (const { cell } of units(c.state, c.owner)) { cell.max_hp += c.amount; cell.hp += c.amount; }
+    await log(c.id, c.state, c.owner, 'effect_buff', `${c.card.name}: tutte le tue creature guadagnano ${c.amount} HP permanenti.`);
+    return;
+  }
   if (c.effect.target !== 'any_creature' || !c.targetId) throw new Error('Seleziona una creatura da potenziare');
   const selected = chosenTarget(c.state, c.owner, c.effect, c.targetId)!.cell as BoardCell & { temp_attack?: number };
-  const detail = c.effect as EffectDefinition & { stat?: string; duration?: string };
-  if (detail.stat === 'hp') {
-    if (detail.duration !== 'permanent') throw new Error('Durata potenziamento HP non supportata');
-    selected.max_hp += c.amount; selected.hp += c.amount;
-  } else if (detail.stat === 'attack') {
+  if (detail.stat === 'hp' && detail.duration === 'permanent') { selected.max_hp += c.amount; selected.hp += c.amount; }
+  else if (detail.stat === 'attack' && (detail.duration === 'turn' || detail.duration === 'permanent')) {
     selected.attack += c.amount;
     if (detail.duration === 'turn') selected.temp_attack = (selected.temp_attack ?? 0) + c.amount;
-    else if (detail.duration !== 'permanent') throw new Error('Durata potenziamento attacco non supportata');
-  } else throw new Error('Statistica del potenziamento non valida');
+  } else throw new Error('Potenziamento non supportato');
   await log(c.id, c.state, c.owner, 'effect_buff', `${c.card.name}: +${c.amount} ${detail.stat === 'hp' ? 'HP permanenti' : detail.duration === 'turn' ? 'attacco fino a fine turno' : 'attacco permanente'}.`);
 }
+
 function expireTemporaryBuffs(s: GameState) {
   for (const owner of [0, 1] as const) for (const { cell } of units(s, owner)) {
     const buffed = cell as BoardCell & { temp_attack?: number };
@@ -267,6 +270,7 @@ export async function createNewMatch(userId: string): Promise<{ matchId: string;
 export async function getMatchState(id: string) { return load(id); }
 function assertTurn(s: GameState, p: PlayerIndex) {
   if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
+  if (s.pending_mostrissimo) throw new Error('Completa prima l’evocazione del Mostrissimo');
 }
 export async function playCard(id: string, p: PlayerIndex, cardInstanceId: string, options: PlayCardOptions = {}): Promise<GameState> {
   const s = await load(id); assertTurn(s, p);
@@ -274,6 +278,7 @@ export async function playCard(id: string, p: PlayerIndex, cardInstanceId: strin
   const i = owner.hand.findIndex(c => c.instance_id === cardInstanceId);
   if (i < 0) throw new Error('Carta non presente nella mano');
   const card = await getCardData(owner.hand[i].card_id);
+  if (card.card_type === 'mostrissimo') throw new Error('Evoca i Mostrissimi dall’offerta condivisa');
   if (owner.current_mana < card.mana_cost) throw new Error('Mana insufficiente');
   const creature = card.card_type === 'monster' || card.card_type === 'mostrissimo';
   if (creature) {
