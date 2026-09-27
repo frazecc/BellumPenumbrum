@@ -1,10 +1,9 @@
-// backend/engine.ts — Bellum Penumbrum v4, Aure e Terraforme passive.
-// Pubblicare soltanto con types.ts, game.js e SQL passivi della stessa consegna.
+// backend/engine.ts — Bellum Penumbrum v4, Aure e Terraforme passive, mazzi a tre colori.
 import { randomUUID } from 'node:crypto';
 import { createClient } from '@supabase/supabase-js';
 import type {
   AiProgress, AttackTarget, BoardCell, CardData, CardEffectJson,
-  CardInstance, CreatureCell, EffectDefinition, GameState, MatchLogEntry,
+  CardInstance, CreatureCell, DeckColors, DeckFaction, EffectDefinition, GameState, MatchLogEntry,
   PendingEvent, PendingWork, PlayerIndex, PlayerState, PlayCardOptions,
   Position, ReactionTriggerEvent, TrapChoice, TurnPhase,
 } from './types.js';
@@ -711,31 +710,84 @@ async function advanceAi(c: Context) {
   progress.stage = 'end'; prepend(s, { kind: 'advance_ai' });
 }
 
-async function deck(): Promise<CardInstance[]> {
-  const { data, error } = await db.from('cards').select('id,card_type,mana_cost,is_boss,effect_json').in('card_type', ['monster', 'instant', 'aura', 'terraforma', 'maledizione']);
+const deckFactions: DeckFaction[] = ['CHI', 'INF', 'PES', 'BUL', 'GRO', 'CLO'];
+function chosenColors(primary: DeckFaction, secondary: DeckFaction): DeckColors {
+  if (!deckFactions.includes(primary) || !deckFactions.includes(secondary) || primary === secondary)
+    throw new Error('Seleziona due colori distinti tra le sei fazioni');
+  const tertiary = shuffle(deckFactions.filter(x => x !== primary && x !== secondary))[0];
+  return { primary, secondary, tertiary };
+}
+function randomColors(): DeckColors {
+  const [primary, secondary, tertiary] = shuffle(deckFactions);
+  return { primary, secondary, tertiary };
+}
+type DeckCard = { id: string; cost: number; type: string; faction: DeckFaction; raw: CardEffectJson | null };
+function deckPlayable(x: DeckCard): boolean {
+  const d = { card_type: x.type, effect_json: x.raw } as CardData;
+  const list = effects(x.raw);
+  if (x.type === 'aura') return passiveAura(d);
+  if (x.type === 'terraforma') return passiveLand(d);
+  if (x.type === 'instant') return list.length > 0 && !!x.raw?.reaction_trigger && list.every(e => supported.has(e.type) || e.type === 'counter' || e.type === 'nope');
+  return list.every(e => supported.has(e.type) && e.duration !== 'while_attached' && e.duration !== 'while_in_play');
+}
+// Il pool esclude IND, Mostrissimi ed effetti non giocabili; il server verifica la curva e le quote.
+async function deckPool(): Promise<DeckCard[]> {
+  const { data, error } = await db.from('cards').select('id,card_type,mana_cost,effect_json,factions!inner(code)')
+    .in('card_type', ['monster', 'instant', 'aura', 'terraforma', 'maledizione']);
   if (error || !data) throw new Error(`Catalogo non disponibile: ${error?.message ?? 'nessun risultato'}`);
-  const pool = data.map(x => ({ id: String(x.id), cost: Number(x.mana_cost), boss: Boolean(x.is_boss), type: String(x.card_type), raw: x.effect_json as CardEffectJson | null }));
-  const playable = pool.filter(x => {
-    const d = { card_type: x.type, effect_json: x.raw } as CardData;
-    const list = effects(x.raw);
-    if (x.type === 'aura') return passiveAura(d);
-    if (x.type === 'terraforma') return passiveLand(d);
-    if (x.type === 'instant') return list.length > 0 && !!x.raw?.reaction_trigger && list.every(e => supported.has(e.type) || e.type === 'counter' || e.type === 'nope');
-    return list.every(e => supported.has(e.type) && e.duration !== 'while_attached' && e.duration !== 'while_in_play');
-  });
-  const monsters = playable.filter(x => x.type === 'monster');
-  const low = monsters.filter(x => x.cost <= 2), mid = monsters.filter(x => x.cost >= 2 && x.cost <= 4), high = monsters.filter(x => x.cost >= 5);
-  const instants = playable.filter(x => x.type === 'instant' && effects(x.raw).length);
-  if (!low.length || !mid.length || !high.length || !instants.length) throw new Error('Catalogo insufficiente per la curva mana 2,5–4');
-  const pick = <T>(xs: T[]) => xs[Math.floor(Math.random() * xs.length)];
-  for (let attempt = 0; attempt < 500; attempt++) {
-    const bosses = high.filter(x => x.boss);
-    const chosen = [pick(bosses.length ? bosses : high), pick(low), pick(low), pick(mid), pick(mid), pick(mid), pick(instants), pick(instants)];
-    while (chosen.length < 10) chosen.push(pick(playable));
-    const avg = chosen.reduce((sum, x) => sum + x.cost, 0) / 10;
-    if (avg >= 2.5 && avg <= 4) return shuffle(chosen.map(x => ({ instance_id: randomUUID(), card_id: x.id })));
+  const pool: DeckCard[] = [];
+  for (const row of data) {
+    const linked = Array.isArray(row.factions) ? row.factions[0] : row.factions;
+    const code = linked && typeof linked === 'object' && 'code' in linked ? String(linked.code).toUpperCase() : '';
+    if (!deckFactions.includes(code as DeckFaction)) continue;
+    const x: DeckCard = { id: String(row.id), cost: Number(row.mana_cost), type: String(row.card_type),
+      faction: code as DeckFaction, raw: row.effect_json as CardEffectJson | null };
+    if (Number.isInteger(x.cost) && x.cost >= 0 && deckPlayable(x)) pool.push(x);
   }
-  throw new Error('Impossibile generare un mazzo con curva mana 2,5–4');
+  return pool;
+}
+function deck(pool: DeckCard[], colors: DeckColors): CardInstance[] {
+  const selected = pool.filter(x => x.faction === colors.primary || x.faction === colors.secondary || x.faction === colors.tertiary);
+  const by = (faction: DeckFaction) => selected.filter(x => x.faction === faction);
+  if (by(colors.primary).length < 2 || by(colors.secondary).length < 2 || by(colors.tertiary).length < 1)
+    throw new Error(`Catalogo insufficiente per il mazzo ${colors.primary}/${colors.secondary}/${colors.tertiary}`);
+  const monsters = selected.filter(x => x.type === 'monster');
+  if (!monsters.length) throw new Error('Catalogo insufficiente: manca un Mostro nei colori del mazzo');
+  const unique = new Map<string, DeckCard>();
+  for (const x of selected) unique.set(x.id, x);
+  const cards = [...unique.values()];
+  if (cards.length < 10) throw new Error(`Catalogo insufficiente: meno di 10 carte distinte per ${colors.primary}/${colors.secondary}/${colors.tertiary}`);
+  const counts = (xs: DeckCard[], faction: DeckFaction) => xs.filter(x => x.faction === faction).length;
+  const validDeck = (xs: DeckCard[]) => {
+    const sum = xs.reduce((n, x) => n + x.cost, 0);
+    return xs.length === 10 && sum >= 25 && sum <= 40
+      && counts(xs, colors.primary) >= 2 && counts(xs, colors.secondary) >= 2 && counts(xs, colors.tertiary) >= 1
+      && xs.some(x => x.type === 'monster');
+  };
+  // Esplorazione locale senza carte duplicate: nessuna quota obbligatoria per Trappole o altri tipi.
+  // Il miglior candidato favorisce la varietà, evitando mazzi con soli Mostri e Trappole.
+  let best: DeckCard[] | null = null, bestScore = -Infinity;
+  for (let attempt = 0; attempt < 1500; attempt++) {
+    const picked: DeckCard[] = [];
+    const used = new Set<string>();
+    const take = (options: DeckCard[]) => {
+      const available = options.filter(x => !used.has(x.id));
+      if (!available.length) return false;
+      const x = available[Math.floor(Math.random() * available.length)];
+      picked.push(x); used.add(x.id); return true;
+    };
+    if (!take(by(colors.primary)) || !take(by(colors.primary)) || !take(by(colors.secondary)) || !take(by(colors.secondary)) || !take(by(colors.tertiary))) continue;
+    // Mostri presenti in ogni mazzo, ma senza fissare un numero di Trappole.
+    if (!picked.some(x => x.type === 'monster') && !take(monsters)) continue;
+    while (picked.length < 10 && take(cards)) { /* riempimento casuale senza duplicati */ }
+    if (!validDeck(picked)) continue;
+    const differentTypes = new Set(picked.map(x => x.type)).size;
+    const nonMonsters = picked.filter(x => x.type !== 'monster').length;
+    const score = differentTypes * 4 + Math.min(nonMonsters, 4) * 2 + Math.random() * 12;
+    if (score > bestScore) { best = picked; bestScore = score; }
+  }
+  if (!best) throw new Error(`Nessun mazzo valido per ${colors.primary}/${colors.secondary}/${colors.tertiary}: controlla il catalogo e la curva mana 2,5–4`);
+  return shuffle(best.map(x => ({ instance_id: randomUUID(), card_id: x.id })));
 }
 async function offer() {
   const { data, error } = await db.from('cards').select('id').eq('card_type', 'mostrissimo');
@@ -747,18 +799,21 @@ async function offer() {
 function player(index: PlayerIndex, userId: string | null, deckCards: CardInstance[]): PlayerState {
   return { player_index: index, user_id: userId, life: 20, max_mana: 0, current_mana: 0, deck: deckCards, hand: [], graveyard: [], extra_deck: [], color_counters: { CHI: 0, INF: 0, PES: 0, BUL: 0, GRO: 0, CLO: 0, IND: 0 } };
 }
-export async function createNewMatch(userId: string): Promise<{ matchId: string; state: GameState }> {
-  const [aiCards, humanCards, catalogue] = await Promise.all([deck(), deck(), offer()]);
+export async function createNewMatch(userId: string, primary: DeckFaction, secondary: DeckFaction): Promise<{ matchId: string; state: GameState }> {
+  // I due mazzi usano identiche regole; i tre colori IA sono indipendenti e possono coincidere.
+  const humanColors = chosenColors(primary, secondary), aiColors = randomColors();
+  const [pool, catalogue] = await Promise.all([deckPool(), offer()]);
+  const humanCards = deck(pool, humanColors), aiCards = deck(pool, aiColors);
   const { data, error } = await db.from('matches').insert({ player_id: userId, opponent_type: 'ai', opponent_name: 'IA Bellum Penumbrum', player_won: null, turns_count: 0, duration_seconds: 0 }).select('id').single();
   if (error || !data) throw new Error(`Creazione partita: ${error?.message ?? 'nessun ID'}`);
   const matchId = String(data.id), ai = player(0, null, aiCards), human = player(1, userId, humanCards);
   for (let i = 0; i < 4; i++) ai.hand.push(ai.deck.shift()!);
   for (let i = 0; i < 3; i++) human.hand.push(human.deck.shift()!);
   human.max_mana = human.current_mana = 1;
-  const state: GameState = { state_version: 4, state_revision: 0, match_id: matchId, status: 'running', players: [ai, human], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null, shared_mostrissimi: catalogue.shared, remaining_mostrissimi: catalogue.remaining, used_mostrissimi: [], work_queue: [], last_mostrissimo_turn: {}, mostrissimo_result: null };
+  const state: GameState = { state_version: 4, state_revision: 0, match_id: matchId, status: 'running', players: [ai, human], deck_colors: [aiColors, humanColors], board: blank(), current_turn: 1, active_player_index: 1, phase: 'main', anti_loop_counter: 0, winner_index: null, shared_mostrissimi: catalogue.shared, remaining_mostrissimi: catalogue.remaining, used_mostrissimi: [], work_queue: [], last_mostrissimo_turn: {}, mostrissimo_result: null };
   const inserted = await db.from('game_state').insert({ match_id: matchId, state_json: state, revision: 0, current_turn: 1, current_phase: phaseNumber(state.phase), last_updated: new Date().toISOString() });
   if (inserted.error) throw new Error(`Creazione stato: ${inserted.error.message}`);
-  await logMatchAction(matchId, { turn: 1, phase: 'main', player_index: -1, action_type: 'match_create', description: 'Partita iniziata: tu hai 3 carte e 1 mana; l’IA ha 4 carte.' });
+  await logMatchAction(matchId, { turn: 1, phase: 'main', player_index: -1, action_type: 'match_create', description: `Partita iniziata. Tu: ${primary}/${secondary}/${humanColors.tertiary}; IA: ${aiColors.primary}/${aiColors.secondary}/${aiColors.tertiary}.` });
   return { matchId, state };
 }
 export async function getMatchState(id: string): Promise<GameState> { return load(id); }

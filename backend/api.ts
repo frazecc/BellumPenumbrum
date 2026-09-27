@@ -15,6 +15,7 @@ import {
 } from './engine.js';
 import type {
   AttackTarget,
+  DeckFaction,
   PlayerIndex,
   PlayCardOptions,
   Position,
@@ -29,6 +30,13 @@ if (!supabaseUrl || !supabaseServiceKey) {
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServiceKey);
 export const apiRouter = Router();
 
+const deckFactions: readonly DeckFaction[] = ['CHI', 'INF', 'PES', 'BUL', 'GRO', 'CLO'];
+function deckFactionValue(value: unknown, label: string): DeckFaction {
+  if (typeof value !== 'string' || !deckFactions.includes(value as DeckFaction)) {
+    throw new Error(`${label} non valido: scegli CHI, INF, PES, BUL, GRO oppure CLO`);
+  }
+  return value as DeckFaction;
+}
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Errore sconosciuto';
 }
@@ -118,7 +126,11 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
 apiRouter.post('/match/create', async (req: Request, res: Response) => {
   try {
     const userId = await requireAuth(req);
-    const { matchId, state } = await createNewMatch(userId);
+    const body = objectValue(req.body);
+    const primary = deckFactionValue(body.primaryColor, 'Colore principale');
+    const secondary = deckFactionValue(body.secondaryColor, 'Colore secondario');
+    if (primary === secondary) throw new Error('Scegli due colori diversi');
+    const { matchId, state } = await createNewMatch(userId, primary, secondary);
     res.status(201).json({ match_id: matchId, state });
   } catch (error) { respondError(res, error); }
 });

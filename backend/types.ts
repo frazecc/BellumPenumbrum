@@ -1,11 +1,16 @@
 // backend/types.ts — contratto dello stato serializzato v4.
-// Pubblicare insieme a engine.ts, game.js e al catalogo passivo aggiornati.
-// Le partite v3 non sono compatibili; la versione dello stato resta 4.
+// Pubblicare insieme agli altri file della consegna deckbuilding a tre colori.
 
 export type PlayerIndex = 0 | 1;
 export type MatchStatus = 'not_started' | 'running' | 'finished';
 export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
 export type CardType = 'monster' | 'mostrissimo' | 'maledizione' | 'instant' | 'terraforma' | 'aura';
+export type DeckFaction = 'CHI' | 'INF' | 'PES' | 'BUL' | 'GRO' | 'CLO';
+export type DeckColors = {
+  primary: DeckFaction;
+  secondary: DeckFaction;
+  tertiary: DeckFaction;
+};
 export type EffectType =
   | 'draw' | 'damage' | 'damage_creature' | 'heal' | 'discard'
   | 'return_hand' | 'destroy' | 'buff' | 'movement_cost'
@@ -71,7 +76,6 @@ export type CreatureCell = CardInstance & {
   auras: BoardCellAura[];
   temp_attack?: number;
   // Totali gia' applicati: consentono il ricalcolo differenziale senza perdere danni.
-  // Le partite v4 esistenti possono non avere questi campi.
   aura_attack_bonus?: number;
   aura_hp_bonus?: number;
   terraforma_attack_bonus?: number;
@@ -197,6 +201,8 @@ export type GameState = {
   match_id: string;
   status: MatchStatus;
   players: [PlayerState, PlayerState];
+  // Ordine come players: IA all'indice 0, giocatore all'indice 1.
+  deck_colors: [DeckColors, DeckColors];
   board: SharedBoard;
   current_turn: number;
   active_player_index: PlayerIndex;
