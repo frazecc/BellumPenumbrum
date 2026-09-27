@@ -1,4 +1,4 @@
-// backend/engine-core.ts — eventi, effetti, turni, IA e scelte on-death (3c).
+// backend/engine-core.ts — eventi, effetti, turni, IA e scelte on-death (3d).
 import { randomUUID } from 'node:crypto';
 import type {
   AiProgress, AttackTarget, CardData, CardInstance, CreatureCell, DeathOrderChoice,
@@ -440,7 +440,6 @@ async function validTraps(c: Context, e: PendingEvent) {
     if (list.some(fx => targeted(fx) && !eligible(c.s, responder, fx).length)) continue;
     if (e.kind === 'monster_etb' && list.some(fx => targeted(fx) && !target(c.s, responder, fx, e.source_instance_id))) continue;
     if (e.kind === 'monster_etb' && !findCreature(c.s, e.source_instance_id)) continue;
-    if (e.kind === 'mostrissimo_before_entry' && !c.s.pending_mostrissimo) continue;
     result.push(inst);
   }
   return result;
@@ -453,6 +452,17 @@ function aiTrapTarget(s: GameState, d: CardData) {
   if (fx.type === 'heal' || fx.type === 'buff') return friends.sort((a, b) => fx.type === 'heal' ? (b.cell.max_hp - b.cell.hp) - (a.cell.max_hp - a.cell.hp) : b.cell.attack - a.cell.attack)[0]?.cell.instance_id ?? null;
   return enemies.sort((a, b) => fx.type === 'return_hand' ? b.cell.attack - a.cell.attack : a.cell.hp - b.cell.hp)[0]?.cell.instance_id ?? null;
 }
+// La finestra monster_etb lega ogni Trappola mirata alla fonte dell'ETB.
+// Negli altri casi l'IA seleziona solo istanze convalidate per tutti gli effetti mirati.
+function aiValidTrapTarget(s: GameState, e: PendingEvent, d: CardData): string | null {
+  const aimed = effects(d.effect_json).filter(targeted);
+  if (!aimed.length) return null;
+  if (e.kind === 'monster_etb')
+    return aimed.every(fx => !!target(s, 0, fx, e.source_instance_id)) ? e.source_instance_id : null;
+  const preferred = aiTrapTarget(s, d);
+  if (preferred && aimed.every(fx => !!target(s, 0, fx, preferred))) return preferred;
+  return units(s).find(x => aimed.every(fx => !!target(s, 0, fx, x.cell.instance_id)))?.cell.instance_id ?? null;
+}
 async function playTrap(c: Context, e: PendingEvent, trapId: string, targetId: string | null) {
   const p = other(e.actor), owner = c.s.players[p];
   const i = owner.hand.findIndex(x => x.instance_id === trapId);
@@ -461,6 +471,8 @@ async function playTrap(c: Context, e: PendingEvent, trapId: string, targetId: s
   if (d.card_type !== 'instant' || reactionTrigger(d) !== eventTrigger(e) || owner.current_mana < d.mana_cost || !list.length)
     throw new Error('Trappola non giocabile in questa finestra');
   const chosenTarget = targetId ?? (e.kind === 'monster_etb' ? e.source_instance_id : null);
+  if (e.kind === 'monster_etb' && list.some(targeted) && chosenTarget !== e.source_instance_id)
+    throw new Error('La Trappola ETB deve bersagliare la creatura che ha generato la finestra');
   for (const fx of list) if (targeted(fx) && !target(c.s, p, fx, chosenTarget)) throw new Error('Bersaglio della Trappola non valido');
   const nope = list.some(x => x.type === 'counter' || x.type === 'nope');
   if (nope && !(await noPeAllowed(d, e))) throw new Error('NOPE non compatibile con questo evento');
@@ -489,7 +501,8 @@ async function declare(c: Context, e: PendingEvent) {
   if (!found.length) { prepend(c.s, { kind: 'apply_event', event: e }); return; }
   if (other(e.actor) === 0) {
     const evaluated = await Promise.all(found.map(async inst => {
-      const d = await getCardData(inst.card_id), t = aiTrapTarget(c.s, d);
+      const d = await getCardData(inst.card_id), t = aiValidTrapTarget(c.s, e, d);
+      const aimed = effects(d.effect_json).some(targeted);
       let score = 0;
       for (const fx of effects(d.effect_json)) {
         const n = Number(fx.amount ?? 1);
@@ -501,7 +514,7 @@ async function declare(c: Context, e: PendingEvent) {
         else if (fx.type === 'draw') score += c.s.players[0].deck.length ? n : -4;
         else if (fx.type === 'discard') score += Math.min(c.s.players[1].hand.length, n);
       }
-      return { inst, t, score: score - d.mana_cost * .5 };
+      return { inst, t, score: aimed && !t ? Number.NEGATIVE_INFINITY : score - d.mana_cost * .5 };
     }));
     evaluated.sort((a, b) => b.score - a.score);
     if (evaluated[0]?.score >= 2) { await playTrap(c, e, evaluated[0].inst.instance_id, evaluated[0].t); return; }
@@ -546,12 +559,15 @@ function startTurn(c: Context, p: PlayerIndex) {
   prepend(s, { kind: 'declare_event', event: { kind: 'upkeep_start', actor: p } });
 }
 function aiChooseTarget(s: GameState, d: CardData) {
-  const fx = effects(d.effect_json).find(targeted);
-  if (!fx) return null;
-  const options = eligible(s, 0, fx);
-  return (fx.type === 'heal' || fx.type === 'buff'
+  const aimed = effects(d.effect_json).filter(targeted);
+  if (!aimed.length) return null;
+  const options = eligible(s, 0, aimed[0]);
+  const preferred = aimed[0].type === 'heal' || aimed[0].type === 'buff'
     ? options.find(x => x.cell.owner_index === 0)
-    : options.find(x => x.cell.owner_index === 1) ?? options[0])?.cell.instance_id ?? null;
+    : options.find(x => x.cell.owner_index === 1);
+  const valid = (id: string) => aimed.every(fx => !!target(s, 0, fx, id));
+  if (preferred && valid(preferred.cell.instance_id)) return preferred.cell.instance_id;
+  return options.find(x => valid(x.cell.instance_id))?.cell.instance_id ?? null;
 }
 async function continueAiMostrissimo(c: Context) {
   const s = c.s, pending = s.pending_mostrissimo;
@@ -762,7 +778,9 @@ export async function completeMostrissimoSummon(id: string, p: PlayerIndex, posi
     if (!valid(position) || !legalPositions(s, p, pending.freed_positions).some(q => q.row === position.row && q.col === position.col)) throw new Error('Cella di evocazione non legale');
     const d = await getCardData(pending.card_id);
     if (!playableEffects(d)) throw new Error('Effetto del Mostrissimo non supportato');
-    if (targetId && !effects(d.effect_json).some(fx => targeted(fx) && target(s, p, fx, targetId))) throw new Error('Bersaglio non valido');
+    const aimed = effects(d.effect_json).filter(targeted);
+    if (targetId && !aimed.every(fx => !!target(s, p, fx, targetId))) throw new Error('Bersaglio non valido');
+    if (!targetId && aimed.some(fx => eligible(s, p, fx).length)) throw new Error('Seleziona una creatura bersaglio');
     pending.stage = 'before_entry'; pending.position = position; pending.target_instance_id = targetId;
     prepend(s, { kind: 'declare_event', event: { kind: 'mostrissimo_before_entry', actor: p, card_id: d.id, offered_instance_id: pending.offered_instance_id, position, target_instance_id: targetId } });
   });
