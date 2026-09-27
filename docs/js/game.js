@@ -1,4 +1,4 @@
-// docs/js/game.js — Bellum Penumbrum v4, regressioni on-death 3c.
+// docs/js/game.js — Bellum Penumbrum v4, bersaglio unico ETB (3d).
 import { getAccessToken, getCurrentUser, signOut, usernameFromEmail } from './auth.js';
 
 const API = 'https://bellum-penumbrum-api.onrender.com';
@@ -44,11 +44,14 @@ function cardHTML(d, mini = false, cell = null) {
   const rules = escape(d.effect_text || 'Nessun effetto.').replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
   return `<article class="game-card ${cls}"><header class="game-card-titlebar"><span class="game-card-name">${escape(d.name)}</span><span class="game-card-cost">${cost}</span></header><div class="game-card-art">${art}</div><div class="game-card-type-row"><span>${escape(types[d.card_type] ?? d.card_type)}</span><span class="game-card-subtype">${escape(d.subtype ?? '')}</span></div><div class="game-card-rules">${rules}</div><div class="game-card-flavor">${escape(d.flavor_text ?? '')}</div><footer class="game-card-footer"><span class="game-card-rarity">${escape(rarities[d.rarity] ?? d.rarity ?? 'Comune')}</span>${creature(d) ? `<span class="game-card-stats"><span class="game-card-atk">⚔ ${atk}</span><span class="game-card-hp">❤ ${hp}</span></span>` : ''}</footer></article>`;
 }
-function targetAllowed(d,c) {
+// Durante monster_etb la Trappola mirata può colpire soltanto la fonte
+// dell'ETB. Le altre finestre conservano le regole ordinarie di bersaglio.
+function targetAllowed(d,c,event=null) {
   if (!isCreatureCell(c)) return false;
   if (d.card_type === 'aura') return true;
   const e = targetEffect(d);
   if (!e) return false;
+  if (event?.kind === 'monster_etb' && c.instance_id !== event.source_instance_id) return false;
   if (['damage','damage_creature'].includes(e.type) && e.timing !== 'instant') return c.owner_index === 0;
   if (e.type === 'heal' && e.timing !== 'instant') return c.owner_index === 1;
   return true;
@@ -255,7 +258,7 @@ async function beginTrap(inst,d) {
   if (targetEffect(d)) {
     flow = {kind:'trap-target',windowId:r.window_id,instanceId:inst.instance_id,id:d.id};
     reactionDialog().classList.add('hidden');
-    await render(); notice(`Scegli la creatura bersaglio di ${d.name}.`, 'success'); return;
+    await render(); notice(r.event?.kind === 'monster_etb' ? 'Scegli la creatura che ha generato l’ETB.' : `Scegli la creatura bersaglio di ${d.name}.`, 'success'); return;
   }
   await chooseTrap({windowId:r.window_id,action:'play',cardInstanceId:inst.instance_id});
 }
@@ -367,7 +370,7 @@ async function drawBoard() {
       if (flow?.kind === 'move' && steps(flow.from).some(x => eq(x,pos))) b.classList.add('valid-move');
       if (flow?.kind === 'attack' && foes(flow.from).some(x => eq(x,pos))) b.classList.add('valid-target');
       if (flow?.kind === 'hand' && flow.step === 'cell' && row === 2 && !c) b.classList.add('valid-summon');
-      if (['hand','boss-target','trap-target'].includes(flow?.kind) && (flow?.step === 'target' || flow?.kind !== 'hand') && d && targetAllowed(d,c)) b.classList.add('valid-target');
+      if (['hand','boss-target','trap-target'].includes(flow?.kind) && (flow?.step === 'target' || flow?.kind !== 'hand') && d && targetAllowed(d,c,flow?.kind === 'trap-target' ? reaction()?.event : null)) b.classList.add('valid-target');
       if (legal.some(x => eq(x,pos))) b.classList.add('valid-summon');
       b.setAttribute('aria-label',c ? `${definition?.name ?? 'Permanente'} ${c.owner_index === 1 ? 'Tu' : 'IA'}${isCreatureCell(c) ? ` ATK ${c.attack} HP ${c.hp}` : ', Terraforma non attaccabile'}${isCreatureCell(c) && c.auras?.length ? `, ${c.auras.length} Aura` : ''}` : `Cella [${row},${col}]`);
       b.innerHTML = c && definition ? cardHTML(definition,true,c) + (isCreatureCell(c) && c.auras?.length ? `<span class="cell-aura-count" title="Aure assegnate">✧ ${c.auras.length}</span>` : '') + `<span class="cell-coordinate">[${row},${col}]</span>` : `<span class="empty-label">${['Riga IA','Centro','Riga Tu'][row]}<br>[${row},${col}]</span>`;
@@ -433,7 +436,7 @@ function controls() {
   disable('cancel-selection-button',busy || obligatory() || !flow || (!!pending() && flow?.kind !== 'trap-target'));
   disable('choose-attack-button',true); disable('choose-move-button',true);
   $('creature-action-panel')?.classList.add('hidden');
-  if ($('selection-instructions')) $('selection-instructions').textContent = deathOrder() ? 'Scegli l’ordine delle creature morte.' : deathTarget() ? 'Scegli il bersaglio dell’effetto alla morte.' : flow?.kind === 'trap-target' ? 'Scegli il bersaglio della Trappola.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Leggi nome e tipo delle carte; tocca per aprire il testo completo.';
+  if ($('selection-instructions')) $('selection-instructions').textContent = deathOrder() ? 'Scegli l’ordine delle creature morte.' : deathTarget() ? 'Scegli il bersaglio dell’effetto alla morte.' : flow?.kind === 'trap-target' ? reaction()?.event?.kind === 'monster_etb' ? 'Scegli la creatura che ha generato l’ETB.' : 'Scegli il bersaglio della Trappola.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Leggi nome e tipo delle carte; tocca per aprire il testo completo.';
 }
 function showDeckColors() {
   const human = state?.deck_colors?.[1], ai = state?.deck_colors?.[0];
@@ -480,7 +483,7 @@ async function boardClick(pos) {
     if (flow?.kind === 'trap-target') {
       if (flow.windowId !== r.window_id) { flow = null; await render(); return notice('Finestra reattiva scaduta.','error'); }
       const d = await card(flow.id);
-      if (!targetAllowed(d,c)) return notice('Bersaglio della Trappola non valido.','error');
+      if (!targetAllowed(d,c,r.event)) return notice('Bersaglio della Trappola non valido.','error');
       return chooseTrap({windowId:r.window_id,action:'play',cardInstanceId:flow.instanceId,targetInstanceId:c.instance_id});
     }
     return notice('Scegli una Trappola oppure passa.','error');
