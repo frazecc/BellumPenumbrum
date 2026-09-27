@@ -1,5 +1,4 @@
-// js/game.js — Bellum Penumbrum, interfaccia partita v4 con Aure e Terraforme passive.
-// Pubblicare solo con backend/types.ts, backend/engine.ts e SQL passivi coordinati.
+// docs/js/game.js — Bellum Penumbrum v4: mazzi a tre colori, Aure e Terraforme passive.
 import { getAccessToken, getCurrentUser, signOut, usernameFromEmail } from './auth.js';
 
 const API = 'https://bellum-penumbrum-api.onrender.com';
@@ -25,6 +24,7 @@ const creature = d => ['monster','mostrissimo'].includes(d.card_type);
 const effects = d => Array.isArray(d?.effect_json?.effects) ? d.effect_json.effects : d?.effect_json?.type ? [d.effect_json] : [];
 const targetEffect = d => effects(d).find(e => e?.target === 'any_creature' || e?.type === 'return_hand');
 const factions = ['','CHI','INF','PES','BUL','GRO','CLO','IND'];
+const deckFactionNames = {CHI:'Chiericanza',INF:'Infamia',PES:'Pestilenza',BUL:'Bullismo',GRO:'Grossanza',CLO:'Clownerie'};
 const types = {monster:'MOSTRO',mostrissimo:'MOSTRISSIMO',maledizione:'MALEDIZIONE',instant:'TRAPPOLA',terraforma:'TERRAFORMA',aura:'AURA'};
 const rarities = {common:'Comune',uncommon:'Non comune',rare:'Rara',ultra_rare:'Ultra rara',legendary:'Leggendaria'};
 const faction = d => {
@@ -361,6 +361,11 @@ function controls() {
   $('creature-action-panel')?.classList.add('hidden');
   if ($('selection-instructions')) $('selection-instructions').textContent = flow?.kind === 'trap-target' ? 'Scegli il bersaglio della Trappola.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Leggi nome e tipo delle carte; tocca per aprire il testo completo.';
 }
+function showDeckColors() {
+  const human = state?.deck_colors?.[1], ai = state?.deck_colors?.[0];
+  if ($('player-deck-colors')) $('player-deck-colors').textContent = human ? `Mazzo: ${human.primary} · ${human.secondary} · ${human.tertiary}` : '';
+  if ($('opponent-deck-colors')) $('opponent-deck-colors').textContent = ai ? `Mazzo: ${ai.primary} · ${ai.secondary} · ${ai.tertiary}` : '';
+}
 async function render() {
   const set = (id,x) => { if ($(id)) $(id).textContent = String(x); };
   set('match-status',state?.status === 'finished' ? 'Terminata' : state ? 'In corso' : 'Nessuna partita');
@@ -370,6 +375,7 @@ async function render() {
   set('player-hand-count',me()?.hand?.length ?? 0); set('player-deck-count',me()?.deck?.length ?? 0); set('player-graveyard-count',me()?.graveyard?.length ?? 0);
   set('opponent-life',them()?.life ?? 20); set('opponent-current-mana',them()?.current_mana ?? 0); set('opponent-max-mana',them()?.max_mana ?? 0);
   set('opponent-hand-count',them()?.hand?.length ?? 0); set('opponent-deck-count',them()?.deck?.length ?? 0); set('opponent-graveyard-count',them()?.graveyard?.length ?? 0);
+  showDeckColors();
   await drawBoard(); await drawHand(); await drawBoss(); controls(); await renderReaction();
 }
 async function logs() {
@@ -432,7 +438,6 @@ async function boardClick(pos) {
       if (c || pos.row !== 2) return notice('Scegli una cella libera della tua riga.','error');
       flow.position = pos;
       if (d.card_type === 'monster' && targetEffect(d) && targets(d).length) { flow.step = 'target'; await render(); notice('Cella scelta. Tocca il bersaglio ETB.','success'); return; }
-      // Le Terraforme non hanno ETB e non richiedono bersagli.
       return request('play-card',{cardInstanceId:flow.instanceId,options:{position:pos}},'Carta dichiarata.');
     }
     if (flow.step === 'target') {
@@ -450,14 +455,62 @@ async function boardClick(pos) {
   }
   if (c) return inspect('unit',c.card_id,{position:pos,cell:c});
 }
-async function newMatch() {
-  if (busy) return; busy = true; controls(); notice('Creazione partita…');
+function colorDialog() {
+  let el = $('deck-color-dialog');
+  if (el) return el;
+  el = document.createElement('div'); el.id = 'deck-color-dialog'; el.className = 'card-detail-overlay hidden';
+  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-labelledby','deck-color-title');
+  el.style.zIndex = '130';
+  const panel = document.createElement('div'); panel.className = 'panel'; panel.style.cssText = 'width:min(92vw,440px);max-height:88dvh;overflow:auto;margin:auto;padding:1.2rem;text-align:center;border:1px solid #d5a758;box-shadow:0 12px 48px #000';
+  const title = document.createElement('h2'); title.id = 'deck-color-title'; title.textContent = 'Scegli i colori del mazzo';
+  const explanation = document.createElement('p'); explanation.textContent = 'Scegli principale e secondario. Il terzo colore sarà casuale; anche l’IA avrà tre colori casuali. IND non entra nel mazzo base.';
+  const form = document.createElement('form'); form.id = 'deck-color-form'; form.style.cssText = 'display:grid;gap:.8rem';
+  const makeSelect = (id,text) => {
+    const label = document.createElement('label'); label.textContent = text; label.style.cssText = 'display:grid;gap:.3rem;text-align:left';
+    const select = document.createElement('select'); select.id = id; select.required = true; select.style.cssText = 'width:100%;padding:.65rem;background:#171924;color:#fff;border:1px solid #d5a758;border-radius:6px';
+    for (const [code,name] of Object.entries(deckFactionNames)) {
+      const option = document.createElement('option'); option.value = code; option.textContent = `${name} (${code})`; select.append(option);
+    }
+    label.append(select); return label;
+  };
+  form.append(makeSelect('deck-primary-color','Colore principale'),makeSelect('deck-secondary-color','Colore secondario'));
+  const validation = document.createElement('p'); validation.id = 'deck-color-validation'; validation.setAttribute('role','alert'); validation.style.color = '#ffbd92'; form.append(validation);
+  const actions = document.createElement('div'); actions.style.cssText = 'display:flex;justify-content:center;flex-wrap:wrap;gap:.6rem';
+  const confirm = document.createElement('button'); confirm.type = 'submit'; confirm.className = 'primary-button'; confirm.textContent = 'Crea partita'; confirm.id = 'deck-color-confirm';
+  const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'secondary-button'; cancel.textContent = 'Annulla'; cancel.onclick = () => closeColorDialog();
+  actions.append(confirm,cancel); form.append(actions); panel.append(title,explanation,form); el.append(panel); document.body.append(el);
+  form.addEventListener('submit',e => { e.preventDefault(); submitColors().catch(fail); });
+  el.addEventListener('click',e => { if (e.target === el && !busy) closeColorDialog(); });
+  return el;
+}
+function closeColorDialog() { $('deck-color-dialog')?.classList.add('hidden'); }
+function openColorDialog() {
+  if (busy || reaction() || pending()) return;
+  close(); closeGraveyard();
+  const el = colorDialog();
+  $('deck-color-validation').textContent = '';
+  if ($('deck-primary-color').value === $('deck-secondary-color').value) $('deck-secondary-color').value = 'INF';
+  el.classList.remove('hidden'); $('deck-primary-color').focus();
+}
+async function submitColors() {
+  if (busy) return;
+  const primaryColor = $('deck-primary-color')?.value, secondaryColor = $('deck-secondary-color')?.value;
+  if (!deckFactionNames[primaryColor] || !deckFactionNames[secondaryColor] || primaryColor === secondaryColor) {
+    $('deck-color-validation').textContent = 'Scegli due colori diversi.'; return;
+  }
+  $('deck-color-validation').textContent = '';
+  await newMatch(primaryColor,secondaryColor);
+}
+async function newMatch(primaryColor,secondaryColor) {
+  if (busy) return; busy = true; controls();
+  $('deck-color-confirm').disabled = true;
+  notice('Creazione partita…');
   try {
-    const result = await api('/match/create',{method:'POST',body:{}});
-    matchId = result.match_id; state = result.state; flow = null; close(); closeGraveyard();
+    const result = await api('/match/create',{method:'POST',body:{primaryColor,secondaryColor}});
+    matchId = result.match_id; state = result.state; flow = null; close(); closeGraveyard(); closeColorDialog();
     localStorage.setItem('bellum:last-match',matchId); await render(); await logs(); notice('Partita pronta. Tocca una carta.','success');
-  } catch(e) { fail(e); }
-  finally { busy = false; await render().catch(fail); }
+  } catch(e) { fail(e); $('deck-color-validation').textContent = e instanceof Error ? e.message : 'Impossibile creare la partita.'; }
+  finally { busy = false; $('deck-color-confirm').disabled = false; await render().catch(fail); }
 }
 async function refreshMatch() {
   if (busy || !matchId) return; busy = true; controls();
@@ -473,16 +526,16 @@ async function init() {
   initialized = true;
   if ($('signed-in-user')) $('signed-in-user').textContent = `@${usernameFromEmail(user.email)}`;
   if ($('player-title')) $('player-title').textContent = usernameFromEmail(user.email) || 'Tu';
-  overlay(); reactionDialog(); graveyardDialog(); wireGraveyards();
-  $('new-match-button')?.addEventListener('click',() => newMatch().catch(fail));
+  overlay(); reactionDialog(); graveyardDialog(); colorDialog(); wireGraveyards();
+  $('new-match-button')?.addEventListener('click',openColorDialog);
   $('cancel-selection-button')?.addEventListener('click',() => {
     if (flow?.kind === 'trap-target') { flow = null; render().catch(fail); notice('Scegli un’altra Trappola o passa.'); return; }
     if (!pending() && !reaction()) { flow = null; close(); render().catch(fail); notice('Selezione annullata.'); }
   });
   $('end-turn-button')?.addEventListener('click',() => { if (active()) request('end-turn',{},'È di nuovo il tuo turno.'); });
   $('refresh-button')?.addEventListener('click',() => refreshMatch().catch(fail));
-  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; close(); closeGraveyard(); reactionDialog().classList.add('hidden'); }).catch(fail));
-  document.addEventListener('keydown',e => { if (e.key === 'Escape') { if (!$('graveyard-dialog')?.classList.contains('hidden')) closeGraveyard(); else if (view) close(); } });
+  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; close(); closeGraveyard(); closeColorDialog(); reactionDialog().classList.add('hidden'); }).catch(fail));
+  document.addEventListener('keydown',e => { if (e.key === 'Escape') { if (!$('deck-color-dialog')?.classList.contains('hidden') && !busy) closeColorDialog(); else if (!$('graveyard-dialog')?.classList.contains('hidden')) closeGraveyard(); else if (view) close(); } });
   await render();
   const prior = localStorage.getItem('bellum:last-match');
   if (prior) try {
