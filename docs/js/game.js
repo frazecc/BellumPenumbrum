@@ -1,18 +1,22 @@
-// docs/js/game.js — Bellum Penumbrum v4: mazzi a tre colori, Aure e Terraforme passive.
+// docs/js/game.js — Bellum Penumbrum v4, regressioni on-death 3c.
 import { getAccessToken, getCurrentUser, signOut, usernameFromEmail } from './auth.js';
 
 const API = 'https://bellum-penumbrum-api.onrender.com';
 const $ = id => document.getElementById(id);
 const cache = new Map();
 let state = null, matchId = null, busy = false, initialized = false, view = null, flow = null;
+let deathDraft = { choiceId: null, instanceIds: [] };
 const board = () => state?.board?.rows ?? [[null,null,null],[null,null,null],[null,null,null]];
 const at = p => board()[p.row]?.[p.col] ?? null;
 const me = () => state?.players?.[1];
 const them = () => state?.players?.[0];
 const reaction = () => state?.pending_reaction?.responder_index === 1 ? state.pending_reaction : null;
+const deathOrder = () => state?.pending_death_order?.chooser_index === 1 ? state.pending_death_order : null;
+const deathTarget = () => state?.pending_target_choice?.chooser_index === 1 ? state.pending_target_choice : null;
+const obligatory = () => !!state?.pending_death_order || !!state?.pending_target_choice;
 const turn = () => state?.status === 'running' && state.active_player_index === 1 && state.phase === 'main';
 const pending = () => state?.pending_mostrissimo?.player_index === 1 ? state.pending_mostrissimo : null;
-const active = () => turn() && !busy && !pending() && !state?.pending_reaction && !(state?.work_queue?.length);
+const active = () => turn() && !busy && !pending() && !state?.pending_reaction && !obligatory() && !(state?.work_queue?.length);
 const inside = p => p.row >= 0 && p.row < 3 && p.col >= 0 && p.col < 3;
 const around = p => [{row:p.row-1,col:p.col},{row:p.row+1,col:p.col},{row:p.row,col:p.col-1},{row:p.row,col:p.col+1}].filter(inside);
 const eq = (a,b) => !!(a && b && a.row === b.row && a.col === b.col);
@@ -104,8 +108,6 @@ async function card(id) {
   if (!cache.has(id)) cache.set(id,(await api(`/cards/${encodeURIComponent(id)}`)).card);
   return cache.get(id);
 }
-// Il catalogo, non il nome dell'Aura, decide il costo. Anche un'Aura nemica
-// assegnata alla nostra creatura puo' renderne gratuito il movimento.
 async function moveCost(cell) {
   for (const aura of cell?.auras ?? []) {
     const d = await card(aura.card_id);
@@ -140,6 +142,77 @@ function reactionDialog() {
   const actions = document.createElement('div'); actions.id = 'reaction-actions';
   stage.append(title,text,choices,actions); el.append(stage); document.body.append(el); return el;
 }
+function choiceDialog() {
+  let el = $('death-choice-dialog');
+  if (el) return el;
+  el = document.createElement('div'); el.id = 'death-choice-dialog'; el.className = 'card-detail-overlay hidden';
+  el.setAttribute('role','dialog'); el.setAttribute('aria-modal','true'); el.setAttribute('aria-labelledby','death-choice-title');
+  el.style.zIndex = '150';
+  const panel = document.createElement('div'); panel.className = 'panel';
+  panel.style.cssText = 'width:min(94vw,740px);max-height:90dvh;overflow:auto;text-align:center;border-color:#d5a758;box-shadow:0 12px 48px #000';
+  const title = document.createElement('h2'); title.id = 'death-choice-title';
+  const text = document.createElement('p'); text.id = 'death-choice-description';
+  const choices = document.createElement('div'); choices.id = 'death-choice-options';
+  choices.style.cssText = 'display:flex;gap:.6rem;flex-wrap:wrap;justify-content:center;margin:.8rem 0';
+  const actions = document.createElement('div'); actions.id = 'death-choice-actions';
+  panel.append(title,text,choices,actions); el.append(panel); document.body.append(el);
+  // Nessun click sullo sfondo o Escape può annullare una scelta obbligatoria.
+  return el;
+}
+async function renderDeathChoice() {
+  const el = choiceDialog(), order = deathOrder(), selected = deathTarget();
+  if (!state || state.status !== 'running' || busy || (!order && !selected)) { el.classList.add('hidden'); return; }
+  close(); closeGraveyard(); reactionDialog().classList.add('hidden');
+  const title = $('death-choice-title'), text = $('death-choice-description');
+  const options = $('death-choice-options'), actions = $('death-choice-actions');
+  options.replaceChildren(); actions.replaceChildren();
+  if (order) {
+    if (deathDraft.choiceId !== order.choice_id) deathDraft = {choiceId:order.choice_id,instanceIds:[]};
+    const creatures = order.creatures ?? [], chosen = deathDraft.instanceIds;
+    title.textContent = 'Ordine degli effetti alla morte';
+    text.textContent = `Scegli la prossima creatura (${chosen.length + 1}/${creatures.length}). Gli effetti di ogni creatura restano nell’ordine scritto sulla carta.`;
+    for (const source of creatures) {
+      if (chosen.includes(source.instance_id)) continue;
+      const d = await card(source.card_id);
+      if (deathOrder()?.choice_id !== order.choice_id) return;
+      const b = button(`${d.name} · ${source.owner_index === 1 ? 'tua' : 'IA'} · ${source.effect_indices?.length ?? 0} effetti`, async () => {
+        if (busy || deathOrder()?.choice_id !== order.choice_id) return;
+        deathDraft.instanceIds.push(source.instance_id);
+        if (deathDraft.instanceIds.length === creatures.length) {
+          const instanceIds = [...deathDraft.instanceIds];
+          await request('death/order',{choiceId:order.choice_id,instanceIds},'Ordine degli effetti alla morte confermato.');
+        } else await renderDeathChoice();
+      });
+      options.append(b);
+    }
+    if (chosen.length) actions.append(button('Ricomincia ordine',async () => {
+      deathDraft = {choiceId:order.choice_id,instanceIds:[]}; await renderDeathChoice();
+    }));
+  } else if (selected) {
+    deathDraft = {choiceId:null,instanceIds:[]};
+    const d = await card(selected.task.card_id);
+    if (deathTarget()?.choice_id !== selected.choice_id) return;
+    title.textContent = 'Bersaglio dell’effetto alla morte';
+    text.textContent = `${d.name}: scegli una creatura bersaglio. La scelta è obbligatoria e si risolve prima dell’effetto successivo.`;
+    for (const instanceId of selected.eligible_instance_ids ?? []) {
+      let found = null;
+      for (let row = 0; row < 3; row++) for (let col = 0; col < 3; col++) {
+        const cell = at({row,col});
+        if (cell?.kind === 'creature' && cell.instance_id === instanceId) found = {cell,row,col};
+      }
+      if (!found) continue;
+      const targetCard = await card(found.cell.card_id);
+      if (deathTarget()?.choice_id !== selected.choice_id) return;
+      const b = button(`${targetCard.name} · ${found.cell.owner_index === 1 ? 'tua' : 'IA'} · [${found.row},${found.col}] · HP ${found.cell.hp}`,() => {
+        if (busy || deathTarget()?.choice_id !== selected.choice_id) return;
+        return request('death/target',{choiceId:selected.choice_id,targetInstanceId:instanceId},'Effetto alla morte risolto.');
+      });
+      options.append(b);
+    }
+    if (!options.childElementCount) text.textContent = 'Nessun bersaglio visibile: aggiorna la partita per recuperare lo stato.';
+  }
+  el.classList.remove('hidden');
+}
 function reactionDescription(e) {
   const names = {
     upkeep_start:'Inizia il MANATENIMENTO avversario, prima di mana, risveglio e pesca.',
@@ -154,7 +227,7 @@ function reactionDescription(e) {
 }
 async function renderReaction() {
   const el = reactionDialog(), r = reaction();
-  if (!r || busy || flow?.kind === 'trap-target') { el.classList.add('hidden'); return; }
+  if (!r || busy || obligatory() || flow?.kind === 'trap-target') { el.classList.add('hidden'); return; }
   $('reaction-title').textContent = r.event?.kind === 'monster_etb' || r.event?.kind === 'mostrissimo_before_entry' ? 'Finestra NOPE / Trappola' : 'Finestra Trappola';
   $('reaction-description').textContent = reactionDescription(r.event);
   const choices = $('reaction-choices'); choices.replaceChildren();
@@ -201,7 +274,7 @@ function graveyardDialog() {
 }
 function closeGraveyard() { $('graveyard-dialog')?.classList.add('hidden'); }
 async function openGraveyard(owner) {
-  if ((owner !== 0 && owner !== 1) || !state || busy) return;
+  if ((owner !== 0 && owner !== 1) || !state || busy || obligatory()) return;
   const el = graveyardDialog(), title = $('graveyard-title'), list = $('graveyard-cards');
   const cards = state.players?.[owner]?.graveyard ?? [];
   title.textContent = `${owner === 1 ? 'Il tuo cimitero' : 'Cimitero dell’IA'} · ${cards.length}`;
@@ -229,7 +302,7 @@ function wireGraveyards() {
   }
 }
 async function inspect(kind,id,extra={}) {
-  if (busy || (reaction() && kind !== 'grave')) return;
+  if (busy || obligatory() || (reaction() && kind !== 'grave')) return;
   view = {kind,id,...extra};
   const current = view, d = await card(id);
   if (current !== view) return;
@@ -298,6 +371,7 @@ async function drawBoard() {
       if (legal.some(x => eq(x,pos))) b.classList.add('valid-summon');
       b.setAttribute('aria-label',c ? `${definition?.name ?? 'Permanente'} ${c.owner_index === 1 ? 'Tu' : 'IA'}${isCreatureCell(c) ? ` ATK ${c.attack} HP ${c.hp}` : ', Terraforma non attaccabile'}${isCreatureCell(c) && c.auras?.length ? `, ${c.auras.length} Aura` : ''}` : `Cella [${row},${col}]`);
       b.innerHTML = c && definition ? cardHTML(definition,true,c) + (isCreatureCell(c) && c.auras?.length ? `<span class="cell-aura-count" title="Aure assegnate">✧ ${c.auras.length}</span>` : '') + `<span class="cell-coordinate">[${row},${col}]</span>` : `<span class="empty-label">${['Riga IA','Centro','Riga Tu'][row]}<br>[${row},${col}]</span>`;
+      b.disabled = busy || obligatory();
       b.onclick = () => boardClick(pos).catch(fail); line.append(b);
     }
     root.append(line);
@@ -310,7 +384,7 @@ async function drawHand() {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'hand-card';
     try {
       const d = await card(inst.card_id); b.innerHTML = cardHTML(d,true);
-      b.disabled = !state || busy || !!reaction();
+      b.disabled = !state || busy || !!reaction() || obligatory();
       if (playable(d)) b.classList.add('playable');
       b.setAttribute('aria-label',`Apri ${d.name}${playable(d) ? ', giocabile' : ''}`);
       b.onclick = () => inspect('hand',inst.card_id,{instanceId:inst.instance_id});
@@ -334,13 +408,13 @@ async function drawBoss() {
     const d = await card(inst.card_id), b = document.createElement('button');
     b.type = 'button'; b.className = 'boss-card'; b.innerHTML = cardHTML(d,true);
     b.setAttribute('aria-label',`Apri ${d.name}, ${d.sacrifice_cost} sacrifici`);
-    b.disabled = busy || !!reaction(); b.onclick = () => inspect('boss',inst.card_id); strip.append(b);
+    b.disabled = busy || !!reaction() || obligatory(); b.onclick = () => inspect('boss',inst.card_id); strip.append(b);
   }
   const p = pending(); if (!p) return;
   const info = document.createElement('p'); info.className = 'tribute-progress';
   info.textContent = p.stage === 'etb' ? 'Risoluzione degli ETB…' : p.stage === 'before_entry' ? 'Evocazione dichiarata: attendi la reazione.' : `Sacrifici ${p.paid.length}/${p.required}. Non puoi annullare.`;
   panel.append(info);
-  if (p.stage !== 'paying' || reaction()) return;
+  if (p.stage !== 'paying' || reaction() || obligatory()) return;
   if (p.paid.length < p.required) {
     const list = document.createElement('div'); list.className = 'tribute-list';
     for (const item of permanents()) {
@@ -355,11 +429,11 @@ async function drawBoss() {
 }
 function controls() {
   const disable = (id,v) => { if ($(id)) $(id).disabled = !!v; };
-  disable('new-match-button',busy); disable('end-turn-button',!active()); disable('refresh-button',busy || !matchId); disable('direct-attack-button',true);
-  disable('cancel-selection-button',busy || !flow || (!!pending() && flow?.kind !== 'trap-target'));
+  disable('new-match-button',busy || obligatory()); disable('end-turn-button',!active()); disable('refresh-button',busy || !matchId); disable('direct-attack-button',true);
+  disable('cancel-selection-button',busy || obligatory() || !flow || (!!pending() && flow?.kind !== 'trap-target'));
   disable('choose-attack-button',true); disable('choose-move-button',true);
   $('creature-action-panel')?.classList.add('hidden');
-  if ($('selection-instructions')) $('selection-instructions').textContent = flow?.kind === 'trap-target' ? 'Scegli il bersaglio della Trappola.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Leggi nome e tipo delle carte; tocca per aprire il testo completo.';
+  if ($('selection-instructions')) $('selection-instructions').textContent = deathOrder() ? 'Scegli l’ordine delle creature morte.' : deathTarget() ? 'Scegli il bersaglio dell’effetto alla morte.' : flow?.kind === 'trap-target' ? 'Scegli il bersaglio della Trappola.' : reaction() ? 'Rispondi alla finestra reattiva o passa.' : flow?.kind === 'boss-target' ? 'Scegli il bersaglio ETB.' : pending() ? 'Evocazione obbligatoria in corso.' : flow?.kind === 'hand' && flow.step === 'cell' ? 'Scegli una cella.' : flow?.kind === 'hand' && flow.step === 'target' ? 'Scegli un bersaglio.' : flow?.kind === 'attack' ? 'Scegli il nemico.' : flow?.kind === 'move' ? 'Scegli una cella adiacente.' : 'Leggi nome e tipo delle carte; tocca per aprire il testo completo.';
 }
 function showDeckColors() {
   const human = state?.deck_colors?.[1], ai = state?.deck_colors?.[0];
@@ -376,7 +450,7 @@ async function render() {
   set('opponent-life',them()?.life ?? 20); set('opponent-current-mana',them()?.current_mana ?? 0); set('opponent-max-mana',them()?.max_mana ?? 0);
   set('opponent-hand-count',them()?.hand?.length ?? 0); set('opponent-deck-count',them()?.deck?.length ?? 0); set('opponent-graveyard-count',them()?.graveyard?.length ?? 0);
   showDeckColors();
-  await drawBoard(); await drawHand(); await drawBoss(); controls(); await renderReaction();
+  await drawBoard(); await drawHand(); await drawBoss(); controls(); await renderReaction(); await renderDeathChoice();
 }
 async function logs() {
   if (!$('match-logs') || !matchId) return;
@@ -388,19 +462,19 @@ async function logs() {
 }
 async function request(path,body,message) {
   if (busy || !matchId) return;
-  close(); busy = true; controls(); reactionDialog().classList.add('hidden');
+  close(); busy = true; controls(); reactionDialog().classList.add('hidden'); choiceDialog().classList.add('hidden');
   try {
     state = (await api(`/match/${encodeURIComponent(matchId)}/${path}`,{method:'POST',body})).state;
     flow = null; await render();
     try { await logs(); } catch(e) { console.warn(e); }
-    notice(state.status === 'finished' ? state.winner_index === 1 ? 'HAI VINTO!' : 'HAI PERSO!' : state.mostrissimo_result?.outcome === 'failed' ? state.mostrissimo_result.message : state.pending_reaction ? reactionDescription(state.pending_reaction.event) : message,state.mostrissimo_result?.outcome === 'failed' ? 'error' : 'success');
+    notice(state.status === 'finished' ? state.winner_index === 1 ? 'HAI VINTO!' : 'HAI PERSO!' : state.mostrissimo_result?.outcome === 'failed' ? state.mostrissimo_result.message : deathOrder() ? 'Scegli l’ordine delle creature morte.' : deathTarget() ? 'Scegli il bersaglio dell’effetto alla morte.' : state.pending_reaction ? reactionDescription(state.pending_reaction.event) : message,state.mostrissimo_result?.outcome === 'failed' ? 'error' : 'success');
   } catch(e) {
     fail(e);
     try { state = (await api(`/match/${encodeURIComponent(matchId)}`)).state; flow = null; } catch(refreshError) { console.warn(refreshError); }
   } finally { busy = false; await render().catch(fail); }
 }
 async function boardClick(pos) {
-  if (busy) return;
+  if (busy || obligatory()) return;
   const c = at(pos), r = reaction();
   if (r) {
     if (flow?.kind === 'trap-target') {
@@ -485,7 +559,7 @@ function colorDialog() {
 }
 function closeColorDialog() { $('deck-color-dialog')?.classList.add('hidden'); }
 function openColorDialog() {
-  if (busy || reaction() || pending()) return;
+  if (busy || reaction() || pending() || obligatory()) return;
   close(); closeGraveyard();
   const el = colorDialog();
   $('deck-color-validation').textContent = '';
@@ -493,7 +567,7 @@ function openColorDialog() {
   el.classList.remove('hidden'); $('deck-primary-color').focus();
 }
 async function submitColors() {
-  if (busy) return;
+  if (busy || obligatory()) return;
   const primaryColor = $('deck-primary-color')?.value, secondaryColor = $('deck-secondary-color')?.value;
   if (!deckFactionNames[primaryColor] || !deckFactionNames[secondaryColor] || primaryColor === secondaryColor) {
     $('deck-color-validation').textContent = 'Scegli due colori diversi.'; return;
@@ -502,12 +576,12 @@ async function submitColors() {
   await newMatch(primaryColor,secondaryColor);
 }
 async function newMatch(primaryColor,secondaryColor) {
-  if (busy) return; busy = true; controls();
+  if (busy || obligatory()) return; busy = true; controls();
   $('deck-color-confirm').disabled = true;
   notice('Creazione partita…');
   try {
     const result = await api('/match/create',{method:'POST',body:{primaryColor,secondaryColor}});
-    matchId = result.match_id; state = result.state; flow = null; close(); closeGraveyard(); closeColorDialog();
+    matchId = result.match_id; state = result.state; flow = null; deathDraft = {choiceId:null,instanceIds:[]}; close(); closeGraveyard(); closeColorDialog();
     localStorage.setItem('bellum:last-match',matchId); await render(); await logs(); notice('Partita pronta. Tocca una carta.','success');
   } catch(e) { fail(e); $('deck-color-validation').textContent = e instanceof Error ? e.message : 'Impossibile creare la partita.'; }
   finally { busy = false; $('deck-color-confirm').disabled = false; await render().catch(fail); }
@@ -526,16 +600,17 @@ async function init() {
   initialized = true;
   if ($('signed-in-user')) $('signed-in-user').textContent = `@${usernameFromEmail(user.email)}`;
   if ($('player-title')) $('player-title').textContent = usernameFromEmail(user.email) || 'Tu';
-  overlay(); reactionDialog(); graveyardDialog(); colorDialog(); wireGraveyards();
+  overlay(); reactionDialog(); choiceDialog(); graveyardDialog(); colorDialog(); wireGraveyards();
   $('new-match-button')?.addEventListener('click',openColorDialog);
   $('cancel-selection-button')?.addEventListener('click',() => {
+    if (obligatory()) return;
     if (flow?.kind === 'trap-target') { flow = null; render().catch(fail); notice('Scegli un’altra Trappola o passa.'); return; }
     if (!pending() && !reaction()) { flow = null; close(); render().catch(fail); notice('Selezione annullata.'); }
   });
   $('end-turn-button')?.addEventListener('click',() => { if (active()) request('end-turn',{},'È di nuovo il tuo turno.'); });
   $('refresh-button')?.addEventListener('click',() => refreshMatch().catch(fail));
-  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; close(); closeGraveyard(); closeColorDialog(); reactionDialog().classList.add('hidden'); }).catch(fail));
-  document.addEventListener('keydown',e => { if (e.key === 'Escape') { if (!$('deck-color-dialog')?.classList.contains('hidden') && !busy) closeColorDialog(); else if (!$('graveyard-dialog')?.classList.contains('hidden')) closeGraveyard(); else if (view) close(); } });
+  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; deathDraft = {choiceId:null,instanceIds:[]}; close(); closeGraveyard(); closeColorDialog(); reactionDialog().classList.add('hidden'); choiceDialog().classList.add('hidden'); }).catch(fail));
+  document.addEventListener('keydown',e => { if (e.key === 'Escape' && !obligatory()) { if (!$('deck-color-dialog')?.classList.contains('hidden') && !busy) closeColorDialog(); else if (!$('graveyard-dialog')?.classList.contains('hidden')) closeGraveyard(); else if (view) close(); } });
   await render();
   const prior = localStorage.getItem('bellum:last-match');
   if (prior) try {
