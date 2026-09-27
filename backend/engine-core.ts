@@ -1,20 +1,21 @@
-// backend/engine-core.ts — eventi, effetti, turni, IA e API pubblica del motore v4.
+// backend/engine-core.ts — eventi, effetti, turni, IA e scelte on-death (3c).
 import { randomUUID } from 'node:crypto';
 import type {
-  AiProgress, AttackTarget, CardData, CardInstance, CreatureCell, DeckFaction,
-  GameState, MatchLogEntry, PendingEvent, PendingWork, PlayerIndex,
-  PlayCardOptions, Position, ReactionTriggerEvent, TrapChoice,
+  AiProgress, AttackTarget, CardData, CardInstance, CreatureCell, DeathOrderChoice,
+  DeathTriggerSource, DeckFaction, GameState, MatchLogEntry, PendingEvent,
+  PendingWork, PlayerIndex, PlayCardOptions, Position, ReactionTriggerEvent,
+  ResolveEffectWork, TargetChoice, TrapChoice,
 } from './types.js';
 import {
   adjacent, allowed, around, at, blank, cells, effects, eligible, enemyNeighbours,
   find, findAura, findCreature, home, instance, keyword, label, other,
   phaseNumber, prepend, put, reactionTrigger, supported, target, targeted, units, valid,
 } from './engine-board.js';
-import { commit, db, getCardData, load, logMatchAction, saveGameState } from './engine-storage.js';
+import { commit, db, getCardData, load, logMatchAction } from './engine-storage.js';
 import { chosenColors, deck, deckPool, offer, playableEffects, player, randomColors } from './engine-deck.js';
 export { getCardData, logMatchAction, saveGameState } from './engine-storage.js';
 
-type Context = { id: string; s: GameState; logs: MatchLogEntry[] };
+type Context = { id: string; s: GameState; logs: MatchLogEntry[]; deaths: DeathTriggerSource[] };
 function log(c: Context, owner: number, action: string, description: string, extra: Partial<MatchLogEntry> = {}) {
   c.logs.push({ turn: c.s.current_turn, phase: c.s.phase, player_index: owner, action_type: action, description, ...extra });
 }
@@ -24,7 +25,8 @@ function checkWinner(c: Context, reason: string) {
   if (winner === null) return;
   c.s.status = 'finished'; c.s.phase = 'end'; c.s.winner_index = winner;
   delete c.s.pending_reaction; delete c.s.pending_mostrissimo; delete c.s.ai_progress;
-  c.s.work_queue = [];
+  delete c.s.pending_death_order; delete c.s.pending_target_choice;
+  c.s.work_queue = []; c.deaths = [];
   log(c, winner, 'match_end', `${winner === 1 ? 'Hai vinto' : 'L’IA ha vinto'}. ${reason}`);
 }
 function draw(c: Context, p: PlayerIndex, count: number) {
@@ -47,8 +49,36 @@ function cleanupLoop(c: Context) {
     put(c.s, position, null);
   }
   c.s.work_queue = c.s.work_queue.filter(x => x.kind !== 'resolve_effect');
-  c.s.anti_loop_counter = 0;
+  delete c.s.pending_death_order; delete c.s.pending_target_choice;
+  c.deaths = []; c.s.anti_loop_counter = 0;
   log(c, -1, 'anti_loop_cleanup', 'La Penombra divora ogni cosa: venti trigger consecutivi, plancia svuotata.');
+}
+function deathTasks(sources: DeathTriggerSource[]): ResolveEffectWork[] {
+  return sources.flatMap(x => x.effect_indices.map(effect_index => ({
+    kind: 'resolve_effect' as const, owner: x.owner_index, card_id: x.card_id,
+    source_instance_id: x.instance_id, source: 'on_death' as const, effect_index,
+    target_instance_id: null, require_source_on_board: false,
+  })));
+}
+// Un singolo task della coda delimita un evento. La riconciliazione avviene
+// prima di questa chiamata: tutte le sue morti confluiscono nello stesso gruppo.
+function flushDeaths(c: Context) {
+  const group = c.deaths; c.deaths = [];
+  if (c.s.status !== 'running' || !group.length) return;
+  const withEffects = group.filter(x => x.effect_indices.length);
+  if (!withEffects.length) return;
+  if (group.length === 1) { prepend(c.s, ...deathTasks(withEffects)); return; }
+  if (c.s.active_player_index === 0) {
+    const ordered = [...withEffects].sort((a, b) =>
+      Number(b.owner_index === 0) - Number(a.owner_index === 0)
+      || b.effect_indices.length - a.effect_indices.length
+      || a.instance_id.localeCompare(b.instance_id));
+    log(c, 0, 'death_order_ai', `L’IA ordina ${group.length} creature morte.`);
+    prepend(c.s, ...deathTasks(ordered));
+    return;
+  }
+  c.s.pending_death_order = { choice_id: randomUUID(), chooser_index: 1, creatures: group };
+  log(c, 1, 'death_order_window', `Scegli l’ordine di ${group.length} creature morte.`, { window_id: c.s.pending_death_order.choice_id });
 }
 
 // Ogni fonte ha il proprio totale serializzato: i delta preservano il danno preesistente.
@@ -92,7 +122,6 @@ async function reconcilePassives(c: Context) {
     cell.terraforma_attack_bonus = t.landAttack; cell.terraforma_hp_bonus = t.landHp;
     if (cell.hp <= 0) dying.push({ position, id: cell.instance_id, owner: cell.owner_index });
   }
-  // La rimozione di più bonus è simultanea; i trigger alla morte sono accodati una volta.
   for (const x of dying) if (at(s, x.position)?.instance_id === x.id) await destroyCell(c, x.position, x.owner, 'destroy', false);
   if (dying.length) await reconcilePassives(c);
 }
@@ -111,12 +140,9 @@ async function destroyCell(c: Context, position: Position, killer: PlayerIndex, 
   if (cell.kind === 'creature') for (const aura of cell.auras) c.s.players[aura.owner_index].graveyard.push(instance(aura));
   const d = await getCardData(cell.card_id);
   log(c, cell.owner_index, reason === 'sacrifice' ? 'permanent_sacrificed' : 'permanent_destroyed', `${d.name} lascia il campo.`, { card_id: d.id, instance_id: cell.instance_id, position });
-  const steps: PendingWork[] = effects(d.effect_on_death_json).map((_, effect_index) => ({
-    kind: 'resolve_effect', owner: cell.owner_index, card_id: d.id,
-    source_instance_id: cell.instance_id, source: 'on_death', effect_index,
-    target_instance_id: null, require_source_on_board: false,
-  }));
-  prepend(c.s, ...steps);
+  const indices = effects(d.effect_on_death_json).map((_, index) => index);
+  if (cell.kind === 'creature') c.deaths.push({ instance_id: cell.instance_id, card_id: d.id, owner_index: cell.owner_index, effect_indices: indices });
+  else prepend(c.s, ...deathTasks([{ instance_id: cell.instance_id, card_id: d.id, owner_index: cell.owner_index, effect_indices: indices }]));
   if (reconcile) await reconcilePassives(c);
   void killer;
 }
@@ -129,7 +155,7 @@ async function removeAura(c: Context, id: string) {
   await reconcilePassives(c);
   return true;
 }
-async function applyEffect(c: Context, task: Extract<PendingWork, { kind: 'resolve_effect' }>) {
+async function applyEffect(c: Context, task: ResolveEffectWork) {
   const s = c.s;
   const onBoard = task.source_instance_id && (find(s, task.source_instance_id) || findAura(s, task.source_instance_id));
   if (task.require_source_on_board && !onBoard) {
@@ -202,6 +228,28 @@ async function applyEffect(c: Context, task: Extract<PendingWork, { kind: 'resol
     throw new Error('NOPE si risolve esclusivamente nella finestra reattiva');
   } else throw new Error(`${d.name}: effetto ${e.type} non implementato.`);
   checkWinner(c, 'PV esauriti dopo un effetto.');
+}
+async function resolveEffectOrChoose(c: Context, task: ResolveEffectWork) {
+  if (task.source === 'on_death' && task.target_instance_id === null) {
+    const d = await getCardData(task.card_id);
+    const fx = effects(d.effect_on_death_json)[task.effect_index];
+    if (fx && targeted(fx)) {
+      const choices = eligible(c.s, task.owner, fx).map(x => x.cell.instance_id);
+      if (choices.length && task.owner === 1) {
+        c.s.pending_target_choice = { choice_id: randomUUID(), chooser_index: 1, task, eligible_instance_ids: choices };
+        log(c, 1, 'death_target_window', `${d.name}: scegli il bersaglio dell’effetto alla morte.`, { card_id: d.id, window_id: c.s.pending_target_choice.choice_id });
+        return;
+      }
+      if (choices.length) {
+        const options = eligible(c.s, task.owner, fx);
+        const preferred = fx.type === 'heal' || fx.type === 'buff'
+          ? options.filter(x => x.cell.owner_index === task.owner).sort((a, b) => (b.cell.max_hp - b.cell.hp) - (a.cell.max_hp - a.cell.hp))
+          : options.filter(x => x.cell.owner_index !== task.owner).sort((a, b) => a.cell.hp - b.cell.hp);
+        task = { ...task, target_instance_id: (preferred[0] ?? options[0]).cell.instance_id };
+      }
+    }
+  }
+  await applyEffect(c, task);
 }
 function eventTrigger(e: PendingEvent): ReactionTriggerEvent | null {
   if (e.kind === 'upkeep_start') return 'opponent_upkeep_start';
@@ -463,28 +511,29 @@ async function declare(c: Context, e: PendingEvent) {
   log(c, 1, 'reaction_window', 'Finestra reattiva: Trappola oppure Passa.', { window_id: c.s.pending_reaction.window_id });
 }
 async function drain(c: Context) {
-  for (let n = 0; n < 300 && c.s.status === 'running' && !c.s.pending_reaction && c.s.work_queue.length; n++) {
+  for (let n = 0; n < 300 && c.s.status === 'running' && !c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && c.s.work_queue.length; n++) {
     const item = c.s.work_queue.shift()!;
     if (item.kind === 'declare_event') await declare(c, item.event);
     else if (item.kind === 'apply_event') await applyEvent(c, item.event);
-    else if (item.kind === 'resolve_effect') await applyEffect(c, item);
+    else if (item.kind === 'resolve_effect') await resolveEffectOrChoose(c, item);
     else if (item.kind === 'finish_mostrissimo') {
       if (c.s.pending_mostrissimo?.card_id === item.card_id && c.s.pending_mostrissimo.player_index === item.actor) delete c.s.pending_mostrissimo;
     } else if (item.kind === 'check_winner') checkWinner(c, item.reason);
     else if (item.kind === 'advance_ai') { c.s.anti_loop_counter = 0; await advanceAi(c); }
+    flushDeaths(c);
   }
-  if (c.s.status === 'running' && !c.s.pending_reaction && c.s.work_queue.length) throw new Error('Limite di sicurezza della coda eventi raggiunto');
-  if (!c.s.pending_reaction && !c.s.work_queue.length) c.s.anti_loop_counter = 0;
+  if (c.s.status === 'running' && !c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && c.s.work_queue.length) throw new Error('Limite di sicurezza della coda eventi raggiunto');
+  if (!c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && !c.s.work_queue.length) c.s.anti_loop_counter = 0;
 }
 async function mutate(id: string, action: (c: Context) => Promise<void>) {
-  const s = await load(id), c: Context = { id, s, logs: [] };
-  if (!s.pending_reaction && !s.work_queue.length) s.anti_loop_counter = 0;
-  await action(c); await drain(c);
+  const s = await load(id), c: Context = { id, s, logs: [], deaths: [] };
+  if (!s.pending_reaction && !s.pending_death_order && !s.pending_target_choice && !s.work_queue.length) s.anti_loop_counter = 0;
+  await action(c); flushDeaths(c); await drain(c);
   return commit(id, s, c.logs);
 }
 function assertTurn(s: GameState, p: PlayerIndex, allowMost = false) {
   if (s.status !== 'running' || s.active_player_index !== p || s.phase !== 'main') throw new Error('Azione non disponibile in questo turno');
-  if (s.pending_reaction || s.work_queue.length) throw new Error('Risolvi prima la finestra reattiva');
+  if (s.pending_reaction || s.pending_death_order || s.pending_target_choice || s.work_queue.length) throw new Error('Risolvi prima la scelta o la finestra reattiva');
   if (!allowMost && s.pending_mostrissimo) throw new Error('Completa prima l’evocazione del Mostrissimo');
 }
 function expireTemporaryBuffs(s: GameState) {
@@ -730,6 +779,32 @@ export async function resolveTrapChoice(id: string, p: PlayerIndex, choice: Trap
       if (!window.eligible_instance_ids.includes(choice.card_instance_id)) throw new Error('Trappola non disponibile in questa finestra');
       await playTrap(c, window.event, choice.card_instance_id, choice.target_instance_id ?? null);
     }
+  });
+}
+export async function resolveDeathOrder(id: string, p: PlayerIndex, choice: DeathOrderChoice): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s, pending = s.pending_death_order;
+    if (s.status !== 'running' || !pending || pending.choice_id !== choice.choice_id || pending.chooser_index !== p)
+      throw new Error('Scelta dell’ordine scaduta o non tua');
+    const expected = pending.creatures.map(x => x.instance_id);
+    if (choice.instance_ids.length !== expected.length || new Set(choice.instance_ids).size !== expected.length
+      || choice.instance_ids.some(x => !expected.includes(x))) throw new Error('Ordine delle creature non valido');
+    const ordered = choice.instance_ids.map(x => pending.creatures.find(v => v.instance_id === x)!);
+    delete s.pending_death_order;
+    log(c, p, 'death_order_chosen', 'Ordine degli effetti alla morte scelto.', { window_id: choice.choice_id });
+    prepend(s, ...deathTasks(ordered));
+  });
+}
+export async function resolveTargetChoice(id: string, p: PlayerIndex, choice: TargetChoice): Promise<GameState> {
+  return mutate(id, async c => {
+    const s = c.s, pending = s.pending_target_choice;
+    if (s.status !== 'running' || !pending || pending.choice_id !== choice.choice_id || pending.chooser_index !== p)
+      throw new Error('Scelta del bersaglio scaduta o non tua');
+    if (!pending.eligible_instance_ids.includes(choice.target_instance_id)) throw new Error('Bersaglio non presente nella scelta');
+    delete s.pending_target_choice;
+    log(c, p, 'death_target_chosen', 'Bersaglio dell’effetto alla morte scelto.', { card_id: pending.task.card_id, target_instance_id: choice.target_instance_id, window_id: choice.choice_id });
+    // applyEffect rivalida il bersaglio corrente; se è sparito, mantiene effect_no_target.
+    await applyEffect(c, { ...pending.task, target_instance_id: choice.target_instance_id });
   });
 }
 export async function endHumanTurn(id: string): Promise<GameState> {

@@ -1,3 +1,4 @@
+// backend/api.ts — API HTTP Bellum Penumbrum, roadmap 3c.
 import { Router, type Request, type Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -9,16 +10,20 @@ import {
   moveCreature,
   playCard,
   resolveTrapChoice,
+  resolveDeathOrder,
+  resolveTargetChoice,
   startMostrissimoSummon,
   payMostrissimoSacrifice,
   completeMostrissimoSummon,
 } from './engine.js';
 import type {
   AttackTarget,
+  DeathOrderChoice,
   DeckFaction,
   PlayerIndex,
   PlayCardOptions,
   Position,
+  TargetChoice,
   TrapChoice,
 } from './types.js';
 
@@ -96,6 +101,24 @@ function trapChoiceValue(value: unknown): TrapChoice {
     };
   }
   throw new Error('Scelta reattiva non valida');
+}
+function deathOrderChoiceValue(value: unknown): DeathOrderChoice {
+  const body = objectValue(value);
+  if (!Array.isArray(body.instanceIds) || body.instanceIds.length < 2 || body.instanceIds.length > 9
+    || body.instanceIds.some(id => typeof id !== 'string' || id.trim() === '')) {
+    throw new Error('Ordine delle creature non valido');
+  }
+  return {
+    choice_id: requiredString(body.choiceId, 'ID scelta ordine'),
+    instance_ids: body.instanceIds.map(id => requiredString(id, 'ID creatura')),
+  };
+}
+function targetChoiceValue(value: unknown): TargetChoice {
+  const body = objectValue(value);
+  return {
+    choice_id: requiredString(body.choiceId, 'ID scelta bersaglio'),
+    target_instance_id: requiredString(body.targetInstanceId, 'ID istanza bersaglio'),
+  };
 }
 async function requireAuth(req: Request): Promise<string> {
   const header = req.header('authorization');
@@ -196,12 +219,24 @@ apiRouter.post('/match/:id/end-turn', async (req: Request, res: Response) => {
     res.json({ state: await endHumanTurn(matchId) });
   } catch (error) { respondError(res, error); }
 });
-// Un solo endpoint: la scelta e' vincolata all'ID univoco della finestra.
-// Un replay della stessa richiesta viene respinto dall'engine e/o dalla RPC CAS.
 apiRouter.post('/match/:id/trap/choice', async (req: Request, res: Response) => {
   try {
     const matchId = await ownedMatch(req);
     res.json({ state: await resolveTrapChoice(matchId, 1, trapChoiceValue(req.body)) });
+  } catch (error) { respondError(res, error); }
+});
+// Le scelte 3c sono vincolate a ID univoci. La RPC commit_match_state
+// respinge anche due scritture concorrenti sulla medesima revisione.
+apiRouter.post('/match/:id/death/order', async (req: Request, res: Response) => {
+  try {
+    const matchId = await ownedMatch(req);
+    res.json({ state: await resolveDeathOrder(matchId, 1, deathOrderChoiceValue(req.body)) });
+  } catch (error) { respondError(res, error); }
+});
+apiRouter.post('/match/:id/death/target', async (req: Request, res: Response) => {
+  try {
+    const matchId = await ownedMatch(req);
+    res.json({ state: await resolveTargetChoice(matchId, 1, targetChoiceValue(req.body)) });
   } catch (error) { respondError(res, error); }
 });
 apiRouter.get('/match/:id/logs', async (req: Request, res: Response) => {

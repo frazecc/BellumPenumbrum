@@ -1,6 +1,4 @@
-// backend/types.ts — contratto dello stato serializzato v4.
-// Pubblicare insieme agli altri file della consegna deckbuilding a tre colori.
-
+// backend/types.ts — contratto dello stato serializzato v4, roadmap 3c.
 export type PlayerIndex = 0 | 1;
 export type MatchStatus = 'not_started' | 'running' | 'finished';
 export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
@@ -20,7 +18,6 @@ export type EffectTarget =
   | 'all_creatures' | 'all_creatures_self' | 'all_creatures_opponent'
   | 'spell' | 'event';
 
-// Il trigger non si desume mai da effect_text; opponent_action e' rimosso.
 export type ReactionTriggerEvent =
   | 'opponent_upkeep_start'
   | 'opponent_upkeep_end'
@@ -63,8 +60,6 @@ export type CardData = {
 
 export type CardInstance = { instance_id: string; card_id: string };
 export type Position = { row: number; col: number };
-
-// L'Aura appartiene a chi l'ha giocata, anche su una creatura nemica.
 export type BoardCellAura = CardInstance & { owner_index: PlayerIndex };
 export type CreatureCell = CardInstance & {
   kind: 'creature';
@@ -75,7 +70,6 @@ export type CreatureCell = CardInstance & {
   tired: boolean;
   auras: BoardCellAura[];
   temp_attack?: number;
-  // Totali gia' applicati: consentono il ricalcolo differenziale senza perdere danni.
   aura_attack_bonus?: number;
   aura_hp_bonus?: number;
   terraforma_attack_bonus?: number;
@@ -111,7 +105,6 @@ export type AttackTarget =
   | { type: 'player'; playerIndex: PlayerIndex };
 export type PlayCardOptions = { position?: Position; targetInstanceId?: string };
 
-// Eventi serializzabili: i costi gia' pagati non sono rimborsati se annullati.
 export type PendingEvent =
   | { kind: 'upkeep_start'; actor: PlayerIndex }
   | { kind: 'upkeep_end'; actor: PlayerIndex }
@@ -155,21 +148,51 @@ export type TrapChoice =
       target_instance_id?: string;
     };
 
-// FIFO persistita: un evento aperto risiede solo in pending_reaction.
-// Una Trappola non genera un nuovo evento dichiarato (niente catene).
+// Ogni evento in risoluzione raccoglie le morti delle creature prima di
+// accodarne gli effetti. Gli indici mantengono l'ordine scritto sulla carta.
+export type DeathTriggerSource = {
+  instance_id: string;
+  card_id: string;
+  owner_index: PlayerIndex;
+  effect_indices: number[];
+};
+export type PendingDeathOrder = {
+  choice_id: string;
+  chooser_index: PlayerIndex;
+  creatures: DeathTriggerSource[];
+};
+export type DeathOrderChoice = {
+  choice_id: string;
+  instance_ids: string[];
+};
+
+export type ResolveEffectWork = {
+  kind: 'resolve_effect';
+  owner: PlayerIndex;
+  card_id: string;
+  source_instance_id: string | null;
+  source: 'on_play' | 'on_death' | 'trap' | 'aura_upkeep';
+  effect_index: number;
+  target_instance_id: string | null;
+  require_source_on_board: boolean;
+};
+export type PendingTargetChoice = {
+  choice_id: string;
+  chooser_index: PlayerIndex;
+  task: ResolveEffectWork;
+  eligible_instance_ids: string[];
+};
+export type TargetChoice = {
+  choice_id: string;
+  target_instance_id: string;
+};
+
+// FIFO persistita: le scelte aperte risiedono nei rispettivi pending.
+// Le Trappole non generano eventi dichiarati aggiuntivi (niente catene).
 export type PendingWork =
   | { kind: 'declare_event'; event: PendingEvent }
   | { kind: 'apply_event'; event: PendingEvent }
-  | {
-      kind: 'resolve_effect';
-      owner: PlayerIndex;
-      card_id: string;
-      source_instance_id: string | null;
-      source: 'on_play' | 'on_death' | 'trap' | 'aura_upkeep';
-      effect_index: number;
-      target_instance_id: string | null;
-      require_source_on_board: boolean;
-    }
+  | ResolveEffectWork
   | { kind: 'finish_mostrissimo'; card_id: string; actor: PlayerIndex }
   | { kind: 'check_winner'; reason: string }
   | { kind: 'advance_ai' };
@@ -196,12 +219,10 @@ export type AiProgress = {
 
 export type GameState = {
   state_version: 4;
-  // commit_match_state aggiorna revision e questa copia nel JSON.
   state_revision: number;
   match_id: string;
   status: MatchStatus;
   players: [PlayerState, PlayerState];
-  // Ordine come players: IA all'indice 0, giocatore all'indice 1.
   deck_colors: [DeckColors, DeckColors];
   board: SharedBoard;
   current_turn: number;
@@ -214,6 +235,8 @@ export type GameState = {
   used_mostrissimi: string[];
   pending_mostrissimo?: PendingMostrissimo;
   pending_reaction?: PendingReaction;
+  pending_death_order?: PendingDeathOrder;
+  pending_target_choice?: PendingTargetChoice;
   work_queue: PendingWork[];
   ai_progress?: AiProgress;
   last_mostrissimo_turn: Partial<Record<PlayerIndex, number>>;
