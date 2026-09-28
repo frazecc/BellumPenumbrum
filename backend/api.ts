@@ -1,4 +1,4 @@
-// backend/api.ts — API HTTP Bellum Penumbrum, registro 3e (lettura paginata).
+// backend/api.ts — API HTTP Bellum Penumbrum, registro 3e ordinato.
 import { Router, type Request, type Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -159,8 +159,8 @@ apiRouter.post('/match/:id/death/target', async (req: Request, res: Response) =>
   try { res.json({ state: await resolveTargetChoice(await ownedMatch(req), 1, targetChoiceValue(req.body)) }); }
   catch (error) { respondError(res, error); }
 });
-// Prima recuperiamo le ultime righe; invertiamo il risultato per mostrarle in ordine cronologico.
-// Per la garanzia di ordine tra righe con identico timestamp servirà un progressivo persistito.
+// Le voci nuove sono ordinate per revisione CAS e posizione nel commit.
+// Le vecchie voci prive di progressivo mantengono l'ordine storico restituito dal DB.
 apiRouter.get('/match/:id/logs', async (req: Request, res: Response) => {
   try {
     const id = await ownedMatch(req);
@@ -170,7 +170,15 @@ apiRouter.get('/match/:id/logs', async (req: Request, res: Response) => {
       .select('id, match_id, log_data, created_at').eq('match_id', id)
       .order('created_at', { ascending: false }).order('id', { ascending: false }).limit(limit);
     if (error) throw new Error(`Impossibile caricare il log: ${error.message}`);
-    res.json({ logs: (data ?? []).reverse() });
+    const ordered = (data ?? []).reverse();
+    ordered.sort((a, b) => {
+      const ar = Number(a.log_data?.log_revision), br = Number(b.log_data?.log_revision);
+      const ai = Number(a.log_data?.log_order), bi = Number(b.log_data?.log_order);
+      if (Number.isInteger(ar) && Number.isInteger(br) && ar !== br) return ar - br;
+      if (ar === br && Number.isInteger(ar) && Number.isInteger(ai) && Number.isInteger(bi)) return ai - bi;
+      return 0;
+    });
+    res.json({ logs: ordered });
   } catch (error) { respondError(res, error); }
 });
 apiRouter.get('/cards/:id', async (req: Request, res: Response) => {
