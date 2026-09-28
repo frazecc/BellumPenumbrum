@@ -1,4 +1,4 @@
-// backend/types.ts — contratto dello stato serializzato v4, roadmap 3c.
+// backend/types.ts — contratto dello stato serializzato v4, checkpoint pubblici.
 export type PlayerIndex = 0 | 1;
 export type MatchStatus = 'not_started' | 'running' | 'finished';
 export type TurnPhase = 'start' | 'upkeep' | 'main' | 'end';
@@ -148,8 +148,7 @@ export type TrapChoice =
       target_instance_id?: string;
     };
 
-// Ogni evento in risoluzione raccoglie le morti delle creature prima di
-// accodarne gli effetti. Gli indici mantengono l'ordine scritto sulla carta.
+// Ogni evento raccoglie le morti delle creature prima di accodarne gli effetti.
 export type DeathTriggerSource = {
   instance_id: string;
   card_id: string;
@@ -217,6 +216,27 @@ export type AiProgress = {
   actions_taken: number;
 };
 
+// Solo dati pubblici: mai mano, mazzo, carta pescata o valutazioni dell'IA.
+// L'annuncio è salvato con lo stato che ha prodotto il checkpoint.
+export type PublicAnnouncement = {
+  id: string;
+  kind: 'phase' | 'card' | 'action' | 'effect' | 'result';
+  actor: PlayerIndex | null;
+  text: string;
+  turn: number;
+  phase: TurnPhase;
+  duration_ms: 1000;
+  card_id?: string;
+  instance_id?: string;
+  position?: Position | null;
+  from_position?: Position | null;
+  to_position?: Position | null;
+  target_instance_id?: string;
+  target_player_index?: PlayerIndex;
+  effect_index?: number;
+  max_mana?: number;
+};
+
 export type GameState = {
   state_version: 4;
   state_revision: number;
@@ -239,6 +259,8 @@ export type GameState = {
   pending_target_choice?: PendingTargetChoice;
   work_queue: PendingWork[];
   ai_progress?: AiProgress;
+  // Un solo annuncio corrente: l'ID consente il replay visivo dopo refresh.
+  public_announcement?: PublicAnnouncement;
   last_mostrissimo_turn: Partial<Record<PlayerIndex, number>>;
   mostrissimo_result: MostrissimoResult | null;
 };

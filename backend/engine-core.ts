@@ -4,7 +4,7 @@ import type {
   AiProgress, AttackTarget, CardData, CardInstance, CreatureCell, DeathOrderChoice,
   DeathTriggerSource, DeckFaction, GameState, MatchLogEntry, PendingEvent,
   PendingWork, PlayerIndex, PlayCardOptions, Position, ReactionTriggerEvent,
-  ResolveEffectWork, TargetChoice, TrapChoice,
+  ResolveEffectWork, TargetChoice, TrapChoice, PublicAnnouncement,
 } from './types.js';
 import {
   adjacent, allowed, around, at, blank, cells, effects, eligible, enemyNeighbours,
@@ -532,8 +532,42 @@ function traceEvent(e: PendingEvent): string {
 function traceEffect(w: ResolveEffectWork): string {
   return `${w.source}, effetto ${w.effect_index + 1}, carta ${w.card_id}${w.target_instance_id ? `, bersaglio ${w.target_instance_id}` : ''}`;
 }
+// Solo dati pubblici. Un commit contiene al massimo un checkpoint visibile;
+// i log diagnostici restano nel registro ma non guidano la presentazione.
+function announcement(c: Context, since = 0): PublicAnnouncement | null {
+  const visible = c.logs.slice(since).filter(x => !x.action_type.startsWith('trace_')
+    && !['reaction_window', 'death_order_window', 'death_target_window'].includes(x.action_type));
+  const entry = visible[0];
+  if (!entry) return null;
+  const actor = entry.player_index === 0 || entry.player_index === 1 ? entry.player_index : null;
+  const phase = entry.action_type === 'upkeep' || entry.action_type === 'upkeep_end' || entry.action_type === 'turn_end';
+  const kind: PublicAnnouncement['kind'] = phase ? 'phase'
+    : ['card_declared', 'trap_played', 'mostrissimo_start', 'mostrissimo_summoned'].includes(entry.action_type) ? 'card'
+    : entry.action_type.startsWith('effect_') ? 'effect' : 'action';
+  const out: PublicAnnouncement = {
+    id: randomUUID(), kind, actor, text: entry.description, turn: entry.turn,
+    phase: entry.phase, duration_ms: 1000,
+  };
+  if (entry.card_id) out.card_id = entry.card_id;
+  if (entry.instance_id) out.instance_id = entry.instance_id;
+  if (entry.position !== undefined) out.position = entry.position;
+  if (entry.from_position !== undefined) out.from_position = entry.from_position;
+  if (entry.to_position !== undefined) out.to_position = entry.to_position;
+  if (entry.target_instance_id) out.target_instance_id = entry.target_instance_id;
+  if (entry.target_player_index !== undefined) out.target_player_index = entry.target_player_index;
+  if (kind === 'phase' && actor !== null) out.max_mana = c.s.players[actor].max_mana;
+  return out;
+}
+function publish(c: Context, since = 0): boolean {
+  const next = announcement(c, since);
+  if (!next) return false;
+  c.s.public_announcement = next;
+  return true;
+}
+
 async function drain(c: Context) {
   for (let n = 0; n < 300 && c.s.status === 'running' && !c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && c.s.work_queue.length; n++) {
+    const checkpointStart = c.logs.length;
     const item = c.s.work_queue.shift()!;
     if (item.kind === 'declare_event') log(c, item.event.actor, 'trace_event_declared', `[3e] Dichiarato ${traceEvent(item.event)}.`);
     else if (item.kind === 'apply_event') log(c, item.event.actor, 'trace_event_resume', `[3e] Riprende ${traceEvent(item.event)}; verifica prerequisiti e applicazione.`);
@@ -552,6 +586,7 @@ async function drain(c: Context) {
     flushDeaths(c);
     if (c.s.pending_death_order || c.s.pending_target_choice)
       log(c, -1, 'trace_death_wait', `[3e] Continuazione sospesa per scelta on-death; ${c.s.work_queue.length} task in attesa.`);
+    if (publish(c, checkpointStart)) return;
   }
   if (c.s.status === 'running' && !c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && c.s.work_queue.length) throw new Error('Limite di sicurezza della coda eventi raggiunto');
   if (!c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && !c.s.work_queue.length) c.s.anti_loop_counter = 0;
@@ -559,7 +594,8 @@ async function drain(c: Context) {
 async function mutate(id: string, action: (c: Context) => Promise<void>) {
   const s = await load(id), c: Context = { id, s, logs: [], deaths: [] };
   if (!s.pending_reaction && !s.pending_death_order && !s.pending_target_choice && !s.work_queue.length) s.anti_loop_counter = 0;
-  await action(c); flushDeaths(c); await drain(c);
+  await action(c); flushDeaths(c);
+  if (!publish(c)) await drain(c);
   return commit(id, s, c.logs);
 }
 function assertTurn(s: GameState, p: PlayerIndex, allowMost = false) {
@@ -850,4 +886,18 @@ export async function endHumanTurn(id: string): Promise<GameState> {
     s.ai_progress = { stage: 'upkeep', actions_taken: 0 };
     prepend(s, { kind: 'advance_ai' });
   });
+}
+
+// L'ID vincola la richiesta al checkpoint visto dal browser. Se un retry o
+// un'altra scheda ha già avanzato lo stato, non viene eseguito alcun task.
+export async function advancePublicCheckpoint(id: string, expectedAnnouncementId: string): Promise<GameState> {
+  const s = await load(id);
+  if (!s.public_announcement || s.public_announcement.id !== expectedAnnouncementId)
+    return s;
+  if (s.pending_reaction || s.pending_death_order || s.pending_target_choice || s.status !== 'running')
+    return s;
+  const c: Context = { id, s, logs: [], deaths: [] };
+  delete s.public_announcement;
+  await drain(c);
+  return commit(id, s, c.logs);
 }

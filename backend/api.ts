@@ -1,4 +1,4 @@
-// backend/api.ts — API HTTP Bellum Penumbrum, registro 3e ordinato.
+// backend/api.ts — API HTTP Bellum Penumbrum, registro 3e ordinato e checkpoint pubblici.
 import { Router, type Request, type Response } from 'express';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -6,6 +6,7 @@ import {
   playCard, resolveTrapChoice, resolveDeathOrder, resolveTargetChoice,
   startMostrissimoSummon, payMostrissimoSacrifice, completeMostrissimoSummon,
 } from './engine.js';
+import { advancePublicCheckpoint } from './engine-core.js';
 import type {
   AttackTarget, DeathOrderChoice, DeckFaction, PlayerIndex, PlayCardOptions,
   Position, TargetChoice, TrapChoice,
@@ -146,6 +147,15 @@ apiRouter.post('/match/:id/attack', async (req: Request, res: Response) => {
 apiRouter.post('/match/:id/end-turn', async (req: Request, res: Response) => {
   try { res.json({ state: await endHumanTurn(await ownedMatch(req)) }); }
   catch (error) { respondError(res, error); }
+});
+// L'ID proviene dall'ultimo checkpoint persistito. Retry e chiamate da due schede
+// non applicano due volte lo stesso task: il motore usa la revisione CAS.
+apiRouter.post('/match/:id/advance', async (req: Request, res: Response) => {
+  try {
+    const id = await ownedMatch(req);
+    const expectedId = requiredString(objectValue(req.body).expectedAnnouncementId, 'ID checkpoint atteso');
+    res.json({ state: await advancePublicCheckpoint(id, expectedId) });
+  } catch (error) { respondError(res, error); }
 });
 apiRouter.post('/match/:id/trap/choice', async (req: Request, res: Response) => {
   try { res.json({ state: await resolveTrapChoice(await ownedMatch(req), 1, trapChoiceValue(req.body)) }); }
