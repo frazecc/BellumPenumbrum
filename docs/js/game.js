@@ -457,10 +457,12 @@ async function render() {
 }
 async function logs() {
   if (!$('match-logs') || !matchId) return;
-  const {logs:entries} = await api(`/match/${encodeURIComponent(matchId)}/logs?limit=100`);
+  const {logs:entries} = await api(`/match/${encodeURIComponent(matchId)}/logs?limit=1000`);
   $('match-logs').replaceChildren();
   for (const e of entries ?? []) {
-    const li = document.createElement('li'); li.textContent = e.log_data?.description ?? e.log_data?.action_type ?? 'Evento'; $('match-logs').append(li);
+    const li = document.createElement('li');
+    li.textContent = e.log_data?.description ?? e.log_data?.action_type ?? 'Evento';
+    $('match-logs').append(li);
   }
 }
 async function request(path,body,message) {
