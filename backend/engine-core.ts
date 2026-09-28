@@ -479,7 +479,7 @@ async function playTrap(c: Context, e: PendingEvent, trapId: string, targetId: s
   owner.current_mana -= d.mana_cost;
   owner.graveyard.push(owner.hand.splice(i, 1)[0]);
   owner.color_counters[d.faction_code] = (owner.color_counters[d.faction_code] ?? 0) + 1;
-  log(c, p, 'trap_played', `${label(p)} gioca ${d.name}.`, { card_id: d.id, instance_id: trapId });
+  log(c, p, 'trap_played', `[3e] ${label(p)} gioca ${d.name} prima di ${traceEvent(e)}${list.some(x => x.type === 'counter' || x.type === 'nope') ? '; evento contrastato' : '; evento da riprendere dopo gli effetti'}.`, { card_id: d.id, instance_id: trapId });
   if (nope) {
     if (e.kind === 'mostrissimo_before_entry') failSummon(c, `NOPE! ${d.name} contrasta l’ingresso; sacrifici già pagati.`);
     log(c, p, 'event_countered', `NOPE! ${d.name} annulla ${e.kind === 'monster_etb' ? 'questo ETB' : e.kind === 'hand_card' ? 'la Maledizione dichiarata' : 'l’ingresso del Mostrissimo'}.`);
@@ -521,11 +521,24 @@ async function declare(c: Context, e: PendingEvent) {
     prepend(c.s, { kind: 'apply_event', event: e }); return;
   }
   c.s.pending_reaction = { window_id: randomUUID(), event: e, responder_index: 1, eligible_instance_ids: found.map(x => x.instance_id) };
-  log(c, 1, 'reaction_window', 'Finestra reattiva: Trappola oppure Passa.', { window_id: c.s.pending_reaction.window_id });
+  log(c, 1, 'reaction_window', `[3e] Finestra per ${traceEvent(e)}: ${found.length} Trappola/e ammissibile/i. Trappola oppure Passa.`, { window_id: c.s.pending_reaction.window_id });
+}
+function traceEvent(e: PendingEvent): string {
+  const ref = e.kind === 'monster_etb' ? ` fonte ${e.source_instance_id}, effetto ${e.effect_index + 1}`
+    : e.kind === 'hand_card' ? ` carta ${e.instance_id}`
+    : e.kind === 'mostrissimo_before_entry' ? ` offerta ${e.offered_instance_id}` : '';
+  return `${e.kind} (${label(e.actor)}${ref})`;
+}
+function traceEffect(w: ResolveEffectWork): string {
+  return `${w.source}, effetto ${w.effect_index + 1}, carta ${w.card_id}${w.target_instance_id ? `, bersaglio ${w.target_instance_id}` : ''}`;
 }
 async function drain(c: Context) {
   for (let n = 0; n < 300 && c.s.status === 'running' && !c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && c.s.work_queue.length; n++) {
     const item = c.s.work_queue.shift()!;
+    if (item.kind === 'declare_event') log(c, item.event.actor, 'trace_event_declared', `[3e] Dichiarato ${traceEvent(item.event)}.`);
+    else if (item.kind === 'apply_event') log(c, item.event.actor, 'trace_event_resume', `[3e] Riprende ${traceEvent(item.event)}; verifica prerequisiti e applicazione.`);
+    else if (item.kind === 'resolve_effect' && (item.source === 'trap' || item.source === 'on_death'))
+      log(c, item.owner, 'trace_effect_start', `[3e] Inizia ${traceEffect(item)}.`);
     if (item.kind === 'declare_event') await declare(c, item.event);
     else if (item.kind === 'apply_event') await applyEvent(c, item.event);
     else if (item.kind === 'resolve_effect') await resolveEffectOrChoose(c, item);
@@ -533,7 +546,12 @@ async function drain(c: Context) {
       if (c.s.pending_mostrissimo?.card_id === item.card_id && c.s.pending_mostrissimo.player_index === item.actor) delete c.s.pending_mostrissimo;
     } else if (item.kind === 'check_winner') checkWinner(c, item.reason);
     else if (item.kind === 'advance_ai') { c.s.anti_loop_counter = 0; await advanceAi(c); }
+    if (item.kind === 'resolve_effect' && (item.source === 'trap' || item.source === 'on_death'))
+      log(c, item.owner, 'trace_effect_end', `[3e] Terminato ${traceEffect(item)}${c.s.pending_target_choice ? '; in attesa del bersaglio on-death' : ''}.`);
+    if (item.kind === 'apply_event') log(c, item.event.actor, 'trace_event_done', `[3e] Conclusa applicazione ${traceEvent(item.event)}.`);
     flushDeaths(c);
+    if (c.s.pending_death_order || c.s.pending_target_choice)
+      log(c, -1, 'trace_death_wait', `[3e] Continuazione sospesa per scelta on-death; ${c.s.work_queue.length} task in attesa.`);
   }
   if (c.s.status === 'running' && !c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && c.s.work_queue.length) throw new Error('Limite di sicurezza della coda eventi raggiunto');
   if (!c.s.pending_reaction && !c.s.pending_death_order && !c.s.pending_target_choice && !c.s.work_queue.length) c.s.anti_loop_counter = 0;
@@ -791,7 +809,7 @@ export async function resolveTrapChoice(id: string, p: PlayerIndex, choice: Trap
     if (!window || window.window_id !== choice.window_id || window.responder_index !== p || s.status !== 'running') throw new Error('Finestra reattiva scaduta o non tua');
     delete s.pending_reaction;
     if (choice.action === 'pass') {
-      log(c, p, 'trap_pass', `${label(p)} passa.`, { window_id: window.window_id });
+      log(c, p, 'trap_pass', `[3e] ${label(p)} passa: ${traceEvent(window.event)} sarà applicato una volta.`, { window_id: window.window_id });
       prepend(s, { kind: 'apply_event', event: window.event });
     } else {
       if (!window.eligible_instance_ids.includes(choice.card_instance_id)) throw new Error('Trappola non disponibile in questa finestra');
