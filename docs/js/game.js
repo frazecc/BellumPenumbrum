@@ -6,6 +6,8 @@ const $ = id => document.getElementById(id);
 const cache = new Map();
 let state = null, matchId = null, busy = false, initialized = false, view = null, flow = null;
 let deathDraft = { choiceId: null, instanceIds: [] };
+let presentationRunning = false, presentationGeneration = 0;
+const waitPresentation = ms => new Promise(resolve => setTimeout(resolve,ms));
 const board = () => state?.board?.rows ?? [[null,null,null],[null,null,null],[null,null,null]];
 const at = p => board()[p.row]?.[p.col] ?? null;
 const me = () => state?.players?.[1];
@@ -228,11 +230,82 @@ function reactionDescription(e) {
   };
   return names[e?.kind] ?? 'L’avversario ha dichiarato un’azione.';
 }
+// Il popup non modifica lo stato: la richiesta /advance parte solo dopo
+// che il checkpoint server-side è stato presentato per un secondo.
+function presentationLayer() {
+  let layer = $('public-checkpoint-layer');
+  if (layer) return layer;
+  layer = document.createElement('div'); layer.id = 'public-checkpoint-layer';
+  Object.assign(layer.style,{position:'fixed',inset:'0',zIndex:'9999',display:'none',
+    alignItems:'center',justifyContent:'center',background:'rgba(5,6,18,.78)',
+    padding:'20px',boxSizing:'border-box',pointerEvents:'auto'});
+  document.body.append(layer); return layer;
+}
+async function presentPublic(a, generation) {
+  const layer = presentationLayer(); layer.replaceChildren();
+  const panel = document.createElement('div');
+  Object.assign(panel.style,{width:'min(440px,95vw)',maxHeight:'90vh',overflowY:'auto',
+    background:'#171426',color:'#f7eedc',border:'2px solid #a78355',borderRadius:'14px',
+    padding:'22px',boxShadow:'0 15px 60px #000',textAlign:'center',fontSize:'1.15rem'});
+  const title = document.createElement('div');
+  title.textContent = a.kind === 'phase'
+    ? `Turno ${a.turn} · ${a.phase === 'upkeep' ? 'MANATENIMENTO' : a.phase === 'main' ? 'PRINCIPALE' : a.phase === 'end' ? 'FINE' : 'INIZIO'} · Mana massimo ${a.max_mana ?? 0}`
+    : a.text;
+  panel.append(title);
+  if (a.kind === 'card' && a.card_id) {
+    try { const d = await card(a.card_id); if (generation !== presentationGeneration) return;
+      const box = document.createElement('div'); box.style.margin = '14px auto';
+      box.innerHTML = cardHTML(d); panel.append(box);
+    } catch(e) { console.warn('Anteprima della carta non disponibile',e); }
+  }
+  if (a.kind !== 'phase' && a.position) {
+    const cell = document.createElement('div'); cell.textContent = `Cella [${a.position.row},${a.position.col}]`;
+    panel.append(cell);
+  }
+  layer.append(panel); layer.style.display = 'flex';
+  await waitPresentation(1000);
+  if (generation === presentationGeneration) layer.style.display = 'none';
+}
+function queuePresentation() {
+  if (presentationRunning || !matchId || !state?.public_announcement) return;
+  const generation = presentationGeneration;
+  presentationRunning = true;
+  void (async () => {
+    try {
+      while (generation === presentationGeneration && matchId && state?.public_announcement) {
+        const a = state.public_announcement, id = matchId;
+        await presentPublic(a,generation);
+        if (generation !== presentationGeneration || matchId !== id) break;
+        if (state.status !== 'running' || state.pending_reaction || obligatory() || !state.work_queue?.length) break;
+        busy = true; controls();
+        try {
+          state = (await api(`/match/${encodeURIComponent(id)}/advance`,
+            {method:'POST',body:{expectedAnnouncementId:a.id}})).state;
+          await render(); await logs();
+        } catch(e) {
+          fail(e);
+          try { state = (await api(`/match/${encodeURIComponent(id)}`)).state; await render(); } catch(refreshError) { console.warn(refreshError); }
+          break;
+        } finally { busy = false; await render().catch(fail); }
+        if (state.public_announcement?.id === a.id) break;
+      }
+    } finally { presentationRunning = false; }
+  })();
+}
 async function renderReaction() {
   const el = reactionDialog(), r = reaction();
   if (!r || busy || obligatory() || flow?.kind === 'trap-target') { el.classList.add('hidden'); return; }
   $('reaction-title').textContent = r.event?.kind === 'monster_etb' || r.event?.kind === 'mostrissimo_before_entry' ? 'Finestra NOPE / Trappola' : 'Finestra Trappola';
-  $('reaction-description').textContent = reactionDescription(r.event);
+  const evt = r.event;
+  let declared = '';
+  if (evt?.card_id) {
+    try { const d = await card(evt.card_id);
+      declared = ` Carta: ${d.name}. Costo ${d.card_type === 'mostrissimo' ? d.sacrifice_cost + ' sacrifici' : d.mana_cost + ' mana'}. ${d.effect_text ?? ''}`;
+    } catch(e) { console.warn(e); }
+  }
+  const position = evt?.options?.position ?? evt?.position;
+  $('reaction-description').textContent = reactionDescription(evt) + declared
+    + (position ? ` Cella [${position.row},${position.col}].` : '');
   const choices = $('reaction-choices'); choices.replaceChildren();
   for (const instId of r.eligible_instance_ids ?? []) {
     const inst = me()?.hand?.find(x => x.instance_id === instId);
@@ -476,7 +549,7 @@ async function request(path,body,message) {
   } catch(e) {
     fail(e);
     try { state = (await api(`/match/${encodeURIComponent(matchId)}`)).state; flow = null; } catch(refreshError) { console.warn(refreshError); }
-  } finally { busy = false; await render().catch(fail); }
+  } finally { busy = false; await render().catch(fail); queuePresentation(); }
 }
 async function boardClick(pos) {
   if (busy || obligatory()) return;
@@ -586,10 +659,11 @@ async function newMatch(primaryColor,secondaryColor) {
   notice('Creazione partita…');
   try {
     const result = await api('/match/create',{method:'POST',body:{primaryColor,secondaryColor}});
+    presentationGeneration++; presentationLayer().style.display = 'none';
     matchId = result.match_id; state = result.state; flow = null; deathDraft = {choiceId:null,instanceIds:[]}; close(); closeGraveyard(); closeColorDialog();
     localStorage.setItem('bellum:last-match',matchId); await render(); await logs(); notice('Partita pronta. Tocca una carta.','success');
   } catch(e) { fail(e); $('deck-color-validation').textContent = e instanceof Error ? e.message : 'Impossibile creare la partita.'; }
-  finally { busy = false; $('deck-color-confirm').disabled = false; await render().catch(fail); }
+  finally { busy = false; $('deck-color-confirm').disabled = false; await render().catch(fail); queuePresentation(); }
 }
 async function refreshMatch() {
   if (busy || !matchId) return; busy = true; controls();
@@ -597,7 +671,7 @@ async function refreshMatch() {
     state = (await api(`/match/${encodeURIComponent(matchId)}`)).state;
     flow = null; close(); closeGraveyard(); await render(); await logs(); notice('Aggiornato.','success');
   } catch(e) { fail(e); }
-  finally { busy = false; await render().catch(fail); }
+  finally { busy = false; await render().catch(fail); queuePresentation(); }
 }
 async function init() {
   if (initialized) return;
@@ -614,14 +688,14 @@ async function init() {
   });
   $('end-turn-button')?.addEventListener('click',() => { if (active()) request('end-turn',{},'È di nuovo il tuo turno.'); });
   $('refresh-button')?.addEventListener('click',() => refreshMatch().catch(fail));
-  $('logout-button')?.addEventListener('click',() => signOut().then(() => { matchId = null; state = null; flow = null; deathDraft = {choiceId:null,instanceIds:[]}; close(); closeGraveyard(); closeColorDialog(); reactionDialog().classList.add('hidden'); choiceDialog().classList.add('hidden'); }).catch(fail));
+  $('logout-button')?.addEventListener('click',() => signOut().then(() => { presentationGeneration++; presentationLayer().style.display = 'none'; matchId = null; state = null; flow = null; deathDraft = {choiceId:null,instanceIds:[]}; close(); closeGraveyard(); closeColorDialog(); reactionDialog().classList.add('hidden'); choiceDialog().classList.add('hidden'); }).catch(fail));
   document.addEventListener('keydown',e => { if (e.key === 'Escape' && !obligatory()) { if (!$('deck-color-dialog')?.classList.contains('hidden') && !busy) closeColorDialog(); else if (!$('graveyard-dialog')?.classList.contains('hidden')) closeGraveyard(); else if (view) close(); } });
   await render();
   const prior = localStorage.getItem('bellum:last-match');
   if (prior) try {
     const result = await api(`/match/${encodeURIComponent(prior)}`);
     if (result.state?.state_version === 4 && result.state.players?.[1]?.user_id === user.id) {
-      matchId = prior; state = result.state; await render(); await logs(); notice('Partita precedente ripristinata.','success');
+      matchId = prior; state = result.state; await render(); await logs(); notice('Partita precedente ripristinata.','success'); queuePresentation();
     }
   } catch(e) { console.warn('Ripristino non disponibile',e); }
 }
