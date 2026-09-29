@@ -1,80 +1,64 @@
-import { getAccessToken } from './auth.js';
+/**
+ * Gestione visiva dell'HUD (Mana, Vita, Mazzo) e della mano avversario coperte di dorso.
+ */
 
-const API = 'https://bellum-penumbrum-api.onrender.com';
-const $ = id => document.getElementById(id);
-let timer = null;
-let requestInFlight = false;
-let refreshAgain = false;
-let observed = false;
+export function updateHUD(state, currentUser) {
+  if (!state) return;
 
-function set(id, value) {
-  const element = $(id);
-  if (element && element.textContent !== String(value)) element.textContent = String(value);
-}
+  const isPlayer1 = state.player1_id === currentUser?.id;
+  const playerData = isPlayer1 ? state.player1 : state.player2;
+  const opponentData = isPlayer1 ? state.player2 : state.player1;
 
-function updateHumanMana() {
-  const source = $('player-mana')?.textContent ?? '';
-  const values = source.match(/(\d+)\s*\/\s*(\d+)/);
-  if (!values) return;
-  set('player-current-mana', values[1]);
-  set('player-max-mana', values[2]);
-}
-
-async function updateAIMana() {
-  const matchId = localStorage.getItem('bellum:last-match');
-  if (!matchId || requestInFlight) {
-    if (requestInFlight) refreshAgain = true;
-    return;
+  // GIOCATORE
+  if (playerData) {
+    setText('player-life', playerData.hp ?? 20);
+    setText('player-current-mana', playerData.mana ?? 0);
+    setText('player-max-mana', playerData.max_mana ?? 0);
+    setText('player-deck-count', playerData.deck_count ?? 0);
+    setText('player-graveyard-count', playerData.graveyard_count ?? 0);
   }
-  requestInFlight = true;
-  try {
-    const token = await getAccessToken();
-    if (!token) return;
-    const response = await fetch(`${API}/match/${encodeURIComponent(matchId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-      cache: 'no-store'
-    });
-    if (!response.ok) return;
-    const json = await response.json();
-    if (localStorage.getItem('bellum:last-match') !== matchId) return;
-    const ai = json.state?.players?.[0];
-    if (!ai) return;
-    set('opponent-current-mana', ai.current_mana ?? 0);
-    set('opponent-max-mana', ai.max_mana ?? 0);
-  } catch (error) {
-    console.warn('HUD: mana IA non aggiornato', error);
-  } finally {
-    requestInFlight = false;
-    if (refreshAgain) {
-      refreshAgain = false;
-      scheduleUpdate();
-    }
+
+  // AVVERSARIO
+  if (opponentData) {
+    setText('opponent-life', opponentData.hp ?? 20);
+    setText('opponent-current-mana', opponentData.mana ?? 0);
+    setText('opponent-max-mana', opponentData.max_mana ?? 0);
+    setText('opponent-deck-count', opponentData.deck_count ?? 0);
+    setText('opponent-graveyard-count', opponentData.graveyard_count ?? 0);
+
+    // AGGIORNAMENTO CARTE COPERTE MANO AVVERSARIO
+    renderOpponentHand(opponentData.hand_count ?? 0);
+  }
+
+  // STATO PARTITA E TURNO
+  setText('match-status', state.status === 'active' ? 'In corso' : state.status);
+  setText('turn-status', `T${state.turn_number ?? 1}`);
+  setText('phase-status', formatPhase(state.current_phase));
+}
+
+function renderOpponentHand(count) {
+  const container = document.getElementById('opponent-hand');
+  if (!container) return;
+
+  container.innerHTML = '';
+  for (let i = 0; i < count; i++) {
+    const cardBack = document.createElement('div');
+    cardBack.className = 'card-back';
+    container.appendChild(cardBack);
   }
 }
 
-function scheduleUpdate() {
-  updateHumanMana();
-  clearTimeout(timer);
-  timer = setTimeout(() => { void updateAIMana(); }, 400);
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = String(text);
 }
 
-function startObservers() {
-  if (observed) return;
-  const source = $('player-mana');
-  const board = $('shared-board');
-  const turn = $('turn-status');
-  if (!source || !board || !turn) return;
-  observed = true;
-  const observer = new MutationObserver(scheduleUpdate);
-  for (const target of [source, board, turn]) {
-    observer.observe(target, { childList: true, characterData: true, subtree: true });
-  }
-  scheduleUpdate();
+function formatPhase(phase) {
+  if (!phase) return '—';
+  const map = {
+    'upkeep': 'Inizio',
+    'main': 'Principale',
+    'end': 'Fine'
+  };
+  return map[phase] || phase;
 }
-
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', startObservers, { once: true });
-} else {
-  startObservers();
-}
-window.addEventListener('bellum:auth-ready', scheduleUpdate);
