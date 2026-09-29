@@ -6,9 +6,17 @@ import { updateHUD } from './hud.js';
 let currentState = null;
 let currentUser = null;
 let selectedCard = null;
+let apiBaseUrl = 'https://bellumpenumbrum.onrender.com'; // O URL relativo / personalizzato
 
-export function initGameEngine(user) {
+export function setApiBaseUrl(url) {
+  if (url) apiBaseUrl = url;
+}
+
+export function initGameEngine(user, options = {}) {
   currentUser = user;
+  if (options.apiBaseUrl) {
+    apiBaseUrl = options.apiBaseUrl;
+  }
   setupEventListeners();
 }
 
@@ -18,6 +26,7 @@ export function renderGameState(state) {
   renderBoard(state);
   renderPlayerHand(state);
   renderLogs(state.logs || []);
+  updateActionButtons(state);
 }
 
 /* RENDERING MANO GIOCATORE CON ICONE E TESTO LEGGIBILE */
@@ -106,6 +115,19 @@ function renderLogs(logs) {
   });
 }
 
+/* AGGIORNAMENTO PULSANTI DI AZIONE */
+function updateActionButtons(state) {
+  const endTurnBtn = document.getElementById('end-turn-button');
+  const directAttackBtn = document.getElementById('direct-attack-button');
+  const cancelBtn = document.getElementById('cancel-selection-button');
+
+  const isMyTurn = state && state.active_player_id === currentUser?.id;
+
+  if (endTurnBtn) endTurnBtn.disabled = !isMyTurn;
+  if (directAttackBtn) directAttackBtn.disabled = !isMyTurn;
+  if (cancelBtn) cancelBtn.disabled = !selectedCard;
+}
+
 /* MODALE INGRANDIMENTO CARTA AL TOCCO */
 function openCardModal(card) {
   const modal = document.getElementById('card-modal');
@@ -125,14 +147,65 @@ function openCardModal(card) {
   modal.classList.remove('hidden');
 }
 
+/* AVVIO DI UNA NUOVA PARTITA VIA API */
+async function handleNewMatch() {
+  const msgEl = document.getElementById('game-message');
+  const newMatchBtn = document.getElementById('new-match-button');
+
+  try {
+    if (newMatchBtn) newMatchBtn.disabled = true;
+    if (msgEl) msgEl.textContent = 'Creazione nuova partita in corso...';
+
+    const token = localStorage.getItem('bp_token') || sessionStorage.getItem('bp_token');
+    const response = await fetch(`${apiBaseUrl}/api/matches/new`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Errore Server: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (data.state) {
+      renderGameState(data.state);
+      if (msgEl) msgEl.textContent = 'Nuova partita avviata!';
+    } else {
+      if (msgEl) msgEl.textContent = 'Partita creata. In attesa di aggiornamento...';
+    }
+  } catch (err) {
+    console.error('Errore creazione nuova partita:', err);
+    if (msgEl) msgEl.textContent = 'Impossibile avviare una nuova partita.';
+  } finally {
+    if (newMatchBtn) newMatchBtn.disabled = false;
+  }
+}
+
 function setupEventListeners() {
   const closeBtn = document.getElementById('card-modal-close');
   const modal = document.getElementById('card-modal');
+  const newMatchBtn = document.getElementById('new-match-button');
+  const cancelBtn = document.getElementById('cancel-selection-button');
   
   if (closeBtn && modal) {
     closeBtn.addEventListener('click', () => modal.classList.add('hidden'));
     modal.addEventListener('click', (e) => {
       if (e.target === modal) modal.classList.add('hidden');
+    });
+  }
+
+  if (newMatchBtn) {
+    newMatchBtn.addEventListener('click', handleNewMatch);
+  }
+
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', () => {
+      selectedCard = null;
+      if (currentState) renderPlayerHand(currentState);
+      updateActionButtons(currentState);
     });
   }
 }
