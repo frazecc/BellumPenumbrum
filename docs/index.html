@@ -15,7 +15,6 @@
   <body>
     <noscript>Bellum Penumbrum richiede JavaScript per funzionare.</noscript>
     <main class="app-shell">
-      <!-- SCHERMATA LOGIN -->
       <section id="auth-screen" class="screen auth-screen" aria-labelledby="auth-title">
         <div class="auth-card panel">
           <p class="eyebrow">Bellum Penumbrum</p>
@@ -29,14 +28,11 @@
           <p id="auth-message" class="form-message" role="status" aria-live="polite"></p>
         </div>
       </section>
-
-      <!-- SCHERMATA DI GIOCO -->
       <section id="game-screen" class="screen game-screen hidden" aria-live="polite">
-        <!-- BARRA COMANDI SUPERIORE -->
-        <header class="hud-top panel" aria-label="Stato partita e controlli">
+        <header class="hud-top panel" aria-label="Stato partita e avversario">
           <div class="hud-controls">
             <div class="hud-status" aria-label="Stato della partita">
-              <div><span class="status-label">Stato</span><strong id="match-status">In corso</strong></div>
+              <div><span class="status-label">Partita</span><strong id="match-status">Nessuna partita</strong></div>
               <div><span class="status-label">Turno</span><strong id="turn-status">—</strong></div>
               <div><span class="status-label">Fase</span><strong id="phase-status">—</strong></div>
             </div>
@@ -46,87 +42,60 @@
               <button id="logout-button" class="secondary-button" type="button">Esci</button>
             </div>
           </div>
-        </header>
-
-        <!-- AREA AVVERSARIO (HUD + MANO COPERTA DI DORSO) -->
-        <section class="arena-hud ai-hud panel" aria-label="Risorse e mano IA">
-          <div class="hud-group hud-left">
-            <div class="hud-value life" title="Salute Eroe IA"><span class="hud-icon">❤️</span><strong id="opponent-life">20</strong></div>
-            <div class="hud-value mana" title="Mana IA"><span class="hud-icon">💎</span><strong id="opponent-current-mana">0</strong>/<strong id="opponent-max-mana">0</strong></div>
-          </div>
-          <h2 class="hud-name">IA Bellum Penumbrum</h2>
-          <div class="hud-group hud-right">
-            <div class="hud-value deck" title="Carte residue nel mazzo"><span class="hud-icon">🎴</span><strong id="opponent-deck-count">0</strong></div>
-            <div class="hud-value grave" title="Cimitero"><span class="hud-icon">🪦</span><strong id="opponent-graveyard-count">0</strong></div>
-          </div>
-          <p id="opponent-deck-colors" class="muted-colors" aria-label="Colori mazzo IA"></p>
-          <span id="opponent-hand-count" class="hud-source-only" aria-hidden="true">0</span>
-          
-          <!-- MANO AVVERSARIO (CARTE COPERTE DI DORSO) -->
-          <div id="opponent-hand" class="opponent-hand-container" title="Carte in mano all'avversario"></div>
-        </section>
-
-        <!-- ARENA CENTRALE (GRIGLIA 3x3 + ZONA MOSTRISSIMI VERTICALE) -->
-        <section class="arena-center-wrapper">
-          <section class="battlefield panel" aria-label="Scacchiera tattica 3x3">
-            <div id="shared-board" class="shared-board"></div>
+          <section class="arena-hud ai-hud" aria-label="Risorse IA">
+            <div class="hud-group hud-left">
+              <div class="hud-value mana"><span class="hud-label">Mana</span><strong id="opponent-current-mana">0</strong></div>
+              <div class="hud-value mana"><span class="hud-label">Max</span><strong id="opponent-max-mana">0</strong></div>
+              <div class="hud-value life"><span class="hud-label">Vita</span><strong id="opponent-life">20</strong></div>
+            </div>
+            <h2 class="hud-name">IA Bellum Penumbrum</h2>
+            <div class="hud-group hud-right">
+              <div class="hud-value deck"><span class="hud-label">Mazzo</span><strong id="opponent-deck-count">0</strong></div>
+              <div class="hud-value grave"><span class="hud-label">Cimitero</span><strong id="opponent-graveyard-count">0</strong></div>
+            </div>
           </section>
-        </section>
-
-        <!-- MODAL OVERLAY CRONOLOGIA E MESSAGGI -->
-        <aside class="arena-sidebar" aria-label="Cronologia e messaggi">
+          <p id="opponent-deck-colors" class="muted" aria-label="Colori del mazzo IA" style="margin:.2rem 0;text-align:center;font-size:.8rem"></p>
+          <span id="opponent-hand-count" class="hud-source-only" aria-hidden="true">0</span>
+        </header>
+        <section class="battlefield panel" aria-label="Scacchiera tattica"><div id="shared-board" class="shared-board"></div></section>
+        <aside class="arena-sidebar" aria-label="Offerta ed eventi della partita">
           <section class="logs-panel panel" aria-label="Cronologia della partita">
             <details class="log-disclosure">
-              <summary>📋 Registro Eventi</summary>
+              <summary>Ultimi eventi · apri cronologia</summary>
               <ol id="match-logs" class="match-logs"></ol>
             </details>
             <button id="refresh-button" class="secondary-button" type="button" disabled>Aggiorna</button>
           </section>
           <p id="game-message" class="game-message" role="status" aria-live="polite"></p>
         </aside>
-
-        <!-- GIOCATORE: HUD + CONTROLLI AZIONE -->
-        <section class="player-summary-panel panel" aria-label="Risorse Giocatore">
+        <section class="player-summary-panel panel" aria-label="Giocatore e azioni del turno">
           <div class="arena-hud player-hud">
             <div class="hud-group hud-left">
-              <div class="hud-value life" title="La tua salute"><span class="hud-icon">❤️</span><strong id="player-life">20</strong></div>
-              <div class="hud-value mana" title="Il tuo mana"><span class="hud-icon">💎</span><strong id="player-current-mana">0</strong>/<strong id="player-max-mana">0</strong></div>
+              <div class="hud-value mana"><span class="hud-label">Mana</span><strong id="player-current-mana">0</strong></div>
+              <div class="hud-value mana"><span class="hud-label">Max</span><strong id="player-max-mana">0</strong></div>
+              <div class="hud-value life"><span class="hud-label">Vita</span><strong id="player-life">20</strong></div>
             </div>
             <h2 id="player-title" class="hud-name">Tu</h2>
             <div class="hud-group hud-right">
-              <div class="hud-value deck" title="Carte nel mazzo"><span class="hud-icon">🎴</span><strong id="player-deck-count">0</strong></div>
-              <div class="hud-value grave" title="Cimitero"><span class="hud-icon">🪦</span><strong id="player-graveyard-count">0</strong></div>
+              <div class="hud-value deck"><span class="hud-label">Mazzo</span><strong id="player-deck-count">0</strong></div>
+              <div class="hud-value grave"><span class="hud-label">Cimitero</span><strong id="player-graveyard-count">0</strong></div>
             </div>
           </div>
-          <p id="player-deck-colors" class="muted-colors" aria-label="Colori del tuo mazzo"></p>
+          <p id="player-deck-colors" class="muted" aria-label="Colori del tuo mazzo" style="margin:.2rem 0;text-align:center;font-size:.8rem"></p>
           <div class="action-panel" aria-label="Azioni del turno">
-            <button id="direct-attack-button" class="player-target attack-button" type="button" disabled>⚔️ Attacca Eroe IA</button>
-            <button id="cancel-selection-button" class="secondary-button" type="button" disabled>❌ Annulla</button>
-            <button id="end-turn-button" class="primary-button end-turn-btn" type="button" disabled>⌛ Fine turno</button>
+            <button id="direct-attack-button" class="player-target" type="button" disabled>Attacca IA direttamente</button>
+            <button id="cancel-selection-button" class="secondary-button" type="button" disabled>Annulla selezione</button>
+            <button id="end-turn-button" class="primary-button" type="button" disabled>Fine turno</button>
           </div>
           <span id="player-mana" class="hud-source-only" aria-hidden="true">0 / 0</span>
           <span id="player-hand-count" class="hud-source-only" aria-hidden="true">0</span>
         </section>
-
-        <!-- MANO GIOCATORE -->
         <section class="hand-section panel" aria-label="Mano del giocatore">
-          <div class="section-heading">
-            <h2>La tua mano</h2>
-            <p id="selection-instructions" class="muted-instructions">Tocca una carta per selezionarla o leggerne i dettagli.</p>
-          </div>
+          <div class="section-heading"><h2>La tua mano</h2><p id="selection-instructions" class="muted">Tocca una carta per aprire il testo completo.</p></div>
           <div id="player-hand" class="hand"></div>
         </section>
       </section>
     </main>
-
-    <!-- MODALE INGRANDIMENTO CARTA -->
-    <div id="card-modal" class="card-modal hidden" role="dialog" aria-modal="true" aria-label="Dettagli Carta">
-      <div class="card-modal-content">
-        <button id="card-modal-close" class="modal-close-btn" type="button">&times;</button>
-        <div id="card-modal-body"></div>
-      </div>
-    </div>
-
     <script type="module" src="js/auth.js"></script>
     <script type="module" src="js/game.js"></script>
     <script type="module" src="js/hud.js"></script>
