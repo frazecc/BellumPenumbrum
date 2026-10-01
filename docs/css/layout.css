@@ -1,289 +1,32 @@
-/* STRUTTURA DEL GAME SCREEN */
-.game-screen {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 4px;
-}
-
-.hud-top {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 10px;
-}
-
-.hud-controls {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.hud-status {
-  display: flex;
-  gap: 10px;
-  font-size: 0.75rem;
-}
-
-.status-label {
-  color: var(--text-muted);
-  margin-right: 3px;
-}
-
-.hud-tools {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.hud-tools button {
-  padding: 4px 8px;
-  font-size: 0.75rem;
-}
-
-/* MANO AVVERSARIO (DORSI COPERTI) */
-.opponent-hand-container {
-  display: flex;
-  justify-content: center;
-  gap: 4px;
-  margin-top: 6px;
-  min-height: 28px;
-  align-items: center;
-}
-
-.card-back {
-  width: 22px;
-  height: 32px;
-  background: linear-gradient(135deg, #2c3e50, #111a2e);
-  border: 1px solid var(--accent-gold);
-  border-radius: 3px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-  position: relative;
-}
-
-.card-back::after {
-  content: "❖";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 10px;
-  color: var(--accent-gold);
-  opacity: 0.7;
-}
-
-/* PLANCIA DI GIOCO 3x3 E OFFERTA */
-.arena-center-wrapper {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.battlefield {
-  padding: 6px;
-  background: rgba(10, 14, 23, 0.9);
-}
-
-.shared-board {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(3, 1fr);
-  gap: 6px;
-  width: 100%;
-  aspect-ratio: 1 / 1;
-}
-
-/* CELLES PLANCIA */
-.board-cell {
-  background: rgba(26, 34, 52, 0.8);
-  border: 1px dashed #3a4a6d;
-  border-radius: 6px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 4px;
-  position: relative;
-  user-select: none;
-  cursor: pointer;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-
-.board-cell.valid-target {
-  border: 2px solid var(--accent-green);
-  box-shadow: inset 0 0 10px rgba(46, 204, 113, 0.4);
-}
-
-.board-cell.attack-target {
-  border: 2px solid var(--accent-red);
-  box-shadow: inset 0 0 10px rgba(231, 76, 60, 0.5);
-  animation: pulse-red 1.2s infinite;
-}
-
-@keyframes pulse-red {
-  0% { box-shadow: inset 0 0 5px rgba(231, 76, 60, 0.4); }
-  50% { box-shadow: inset 0 0 15px rgba(231, 76, 60, 0.8); }
-  100% { box-shadow: inset 0 0 5px rgba(231, 76, 60, 0.4); }
-}
-
-/* CARTE IN MANO E IN CAMPO */
-.hand-section {
-  padding: 8px;
-}
-
-.hand {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 6px 2px 10px 2px;
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
-}
-
-.hand::-webkit-scrollbar {
-  height: 4px;
-}
-
-.hand::-webkit-scrollbar-thumb {
-  background: #3a4a6d;
-  border-radius: 4px;
-}
-
-.card-item {
-  flex: 0 0 110px;
-  height: 150px;
-  background: linear-gradient(180deg, #1f2738 0%, #121724 100%);
-  border: 2px solid var(--panel-border);
-  border-radius: 8px;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  position: relative;
-  cursor: pointer;
-  box-shadow: 0 4px 8px rgba(0,0,0,0.4);
-  transition: transform 0.15s, border-color 0.15s;
-}
-
-.card-item:hover, .card-item.selected {
-  transform: translateY(-4px);
-  border-color: var(--accent-gold);
-  box-shadow: 0 6px 12px rgba(243, 156, 18, 0.3);
-}
-
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-}
-
-.card-title {
-  font-size: 0.75rem;
-  font-weight: bold;
-  line-height: 1.1;
-  color: #fff;
-  max-width: 75px;
-  word-break: break-word;
-}
-
-.card-mana {
-  background: var(--accent-blue);
-  color: #fff;
-  border-radius: 50%;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.75rem;
-  font-weight: bold;
-  box-shadow: 0 0 6px rgba(41, 128, 185, 0.8);
-}
-
-.card-body-text {
-  font-size: 0.65rem;
-  color: var(--text-muted);
-  line-height: 1.15;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  margin: 4px 0;
-}
-
-.card-stats {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.8rem;
-  font-weight: bold;
-  margin-top: auto;
-}
-
-.card-stat-atk {
-  color: #f1c40f;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.card-stat-hp {
-  color: #e74c3c;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-
-/* CARTA IN GRIGLIA (MINIATURA COMPATTA) */
-.board-card {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  background: rgba(18, 24, 38, 0.95);
-  border-radius: 4px;
-  padding: 4px;
-  border: 1px solid #3a4a6d;
-}
-
-.board-card-title {
-  font-size: 0.65rem;
-  font-weight: bold;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #ecf0f1;
-}
-
-.board-card-text {
-  font-size: 0.55rem;
-  color: var(--text-muted);
-  line-height: 1.1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
-/* AZIONI DEL TURNO */
-.action-panel {
-  display: flex;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.action-panel button {
-  flex: 1;
-  font-size: 0.8rem;
-  padding: 8px 4px;
-}
-
-.attack-button {
-  background: linear-gradient(135deg, #c0392b, #8e44ad);
-  color: #fff;
-}
-
-.end-turn-btn {
-  background: linear-gradient(135deg, #27ae60, #2980b9);
-}
+/* Bellum Penumbrum: HUD compatto. Caricare dopo style.css e compact.css. */
+.game-screen{grid-template-columns:minmax(0,1fr) minmax(150px,240px);grid-template-rows:auto minmax(0,1fr) auto auto;gap:.3rem;min-height:0;height:calc(100dvh - .8rem)}
+.game-screen>.hud-top{grid-column:1/-1;grid-row:1;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.45rem;padding:.25rem .5rem;min-height:0;text-align:center}
+.game-screen>.hud-top .hud-status{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:.45rem;border:0;background:none;box-shadow:none;padding:0;min-width:0}
+.game-screen>.hud-top .hud-status>div{display:flex;align-items:baseline;gap:.2rem;font-size:.78rem;white-space:nowrap}
+.game-screen>.hud-top .status-label{font-size:.68rem;color:#b1acb2}
+.game-screen>.hud-top .hud-opponent{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.35rem;min-width:0;margin:0;padding:0;border:0;background:none;box-shadow:none}
+.game-screen>.hud-top .hud-opponent h2{margin:0;font-family:'Roboto Condensed',Arial,sans-serif;font-size:.84rem;font-weight:800;color:#ffc0cb}
+.game-screen>.hud-top .hud-opponent .resource-grid{gap:.4rem;font-size:.76rem}
+.game-screen>.hud-top .hud-opponent .resource-grid strong{color:#fff}
+.game-screen>.hud-top .hud-tools{display:flex;gap:.3rem;align-items:center;justify-content:center}
+.game-screen>.hud-top #new-match-button,.game-screen>.hud-top #logout-button{min-height:1.8rem;padding:.18rem .45rem;font-size:.72rem;white-space:nowrap}
+.game-screen>.battlefield{grid-column:1;grid-row:2;min-height:0;min-width:0;padding:.25rem;display:flex;align-items:center;justify-content:center}
+.game-screen>.battlefield .shared-board{width:auto;height:100%;max-width:100%;max-height:100%;aspect-ratio:1/1;margin:auto;min-width:0;min-height:0}
+.game-screen>#mostrissimo-panel{grid-column:2;grid-row:2;min-height:0;min-width:0}
+.game-screen>.player-summary-panel{grid-column:1/-1;grid-row:3;display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:.35rem;min-height:0;padding:.18rem .45rem;text-align:center}
+.game-screen>.player-summary-panel .player-hud-name{margin:0;color:#b9dbff;font-family:'Roboto Condensed',Arial,sans-serif;font-size:.85rem;font-weight:800}
+.game-screen>.player-summary-panel .resource-grid{gap:.42rem;font-size:.8rem;justify-content:center}
+.game-screen>.player-summary-panel .resource-grid strong{color:#fff}
+.game-screen>.player-summary-panel .action-panel{display:flex;gap:.3rem;align-items:center;justify-content:center;flex-wrap:wrap;margin:0;padding:0;border:0;border-left:1px solid #65606a;border-radius:0;background:none;box-shadow:none;padding-left:.4rem}
+.game-screen>.player-summary-panel .action-panel button{min-height:1.85rem;padding:.2rem .45rem;font-size:.73rem}
+.game-screen>.player-summary-panel .action-panel #end-turn-button{min-width:85px}
+.game-screen>.hand-section:not(#mostrissimo-panel){grid-column:1/-1;grid-row:4;min-height:0;padding:.18rem .45rem}
+.game-screen>.hand-section .section-heading{justify-content:center;gap:.5rem;margin:0 0 .1rem}
+.game-screen>.hand-section .section-heading h2{margin:0;font-family:'Roboto Condensed',Arial,sans-serif;font-size:.8rem;font-weight:800}
+.game-screen>.hand-section .hand{height:clamp(85px,14dvh,125px);justify-content:safe center}
+.game-screen>.hand-section .hand-card{flex-basis:clamp(72px,11dvh,103px)}
+.game-screen>.logs-panel,.game-screen>.creature-action-panel{display:none!important}
+.game-screen>.game-message{z-index:15}
+@media(max-width:900px){.game-screen{grid-template-columns:minmax(0,1fr) minmax(90px,130px)}.game-screen>.hud-top .hud-opponent .resource-grid{font-size:.71rem}.game-screen>.hand-section .hand{height:clamp(76px,13dvh,112px)}.game-screen>.hand-section .hand-card{flex-basis:clamp(66px,10dvh,92px)}}
+@media(max-width:560px){.game-screen{grid-template-columns:minmax(0,1fr) 80px;gap:.17rem;height:calc(100dvh - .3rem)}.game-screen>.hud-top{gap:.18rem;padding:.12rem .2rem}.game-screen>.hud-top .hud-status{gap:.22rem}.game-screen>.hud-top .hud-status>div{font-size:.65rem}.game-screen>.hud-top .hud-status>div:nth-child(3){display:none}.game-screen>.hud-top .hud-opponent{gap:.2rem}.game-screen>.hud-top .hud-opponent h2{font-size:.69rem}.game-screen>.hud-top .hud-opponent .resource-grid{gap:.23rem;font-size:.65rem}.game-screen>.hud-top .hud-tools button{min-height:1.6rem!important;padding:.08rem .23rem!important;font-size:.6rem!important}.game-screen>.player-summary-panel{gap:.2rem;padding:.12rem .2rem}.game-screen>.player-summary-panel .player-hud-name{font-size:.72rem}.game-screen>.player-summary-panel .resource-grid{gap:.23rem;font-size:.66rem}.game-screen>.player-summary-panel .action-panel{gap:.16rem;padding-left:.2rem}.game-screen>.player-summary-panel .action-panel button{min-height:1.6rem;padding:.08rem .2rem;font-size:.62rem}.game-screen>.player-summary-panel .action-panel #end-turn-button{min-width:66px}.game-screen>.hand-section .hand{height:clamp(70px,12dvh,94px)}.game-screen>.hand-section .hand-card{flex-basis:clamp(62px,9dvh,81px)}.game-screen>#mostrissimo-panel{padding:.18rem}.game-screen>#mostrissimo-panel h2{font-size:.7rem}}
+@media(max-height:650px){.game-screen>.hud-top .hud-status>div:nth-child(3){display:none}.game-screen>.hand-section .hand{height:64px}.game-screen>.hand-section .hand-card{flex-basis:58px}}
