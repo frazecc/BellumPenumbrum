@@ -1,4 +1,6 @@
 // backend/engine-core.ts — eventi, effetti, turni, IA e scelte on-death (3d).
+// Passo 2: l'IA separa il bersaglio legale dalla mossa conveniente (Aure, cure e bonus solo sulle proprie
+// creature; danni e rimozioni solo sulle avversarie) e sceglie l'attacco migliore invece del primo adiacente.
 import { randomUUID } from 'node:crypto';
 import type {
   AiProgress, AttackTarget, CardData, CardInstance, CreatureCell, DeathOrderChoice,
@@ -612,16 +614,50 @@ function startTurn(c: Context, p: PlayerIndex) {
   if (p === 1) s.current_turn++;
   prepend(s, { kind: 'declare_event', event: { kind: 'upkeep_start', actor: p } });
 }
+// Bersaglio legale ≠ mossa conveniente: cure e bonus vanno solo su creature dell'IA, danni e
+// rimozioni solo su creature avversarie. Se il lato giusto è vuoto non si ripiega sull'altro: null.
+const creatureValue = (cell: CreatureCell) => cell.attack * 2 + cell.hp;
 function aiChooseTarget(s: GameState, d: CardData) {
   const aimed = effects(d.effect_json).filter(targeted);
   if (!aimed.length) return null;
-  const options = eligible(s, 0, aimed[0]);
-  const preferred = aimed[0].type === 'heal' || aimed[0].type === 'buff'
-    ? options.find(x => x.cell.owner_index === 0)
-    : options.find(x => x.cell.owner_index === 1);
+  const friendly = aimed[0].type === 'heal' || aimed[0].type === 'buff';
   const valid = (id: string) => aimed.every(fx => !!target(s, 0, fx, id));
-  if (preferred && valid(preferred.cell.instance_id)) return preferred.cell.instance_id;
-  return options.find(x => valid(x.cell.instance_id))?.cell.instance_id ?? null;
+  const options = eligible(s, 0, aimed[0]).filter(x => x.cell.owner_index === (friendly ? 0 : 1) && valid(x.cell.instance_id));
+  if (!options.length) return null;
+  const rank = (cell: CreatureCell) => creatureValue(cell) + (aimed[0].type === 'heal' ? (cell.max_hp - cell.hp) * 10 : 0);
+  options.sort((x, y) => rank(y.cell) - rank(x.cell));
+  return options[0].cell.instance_id;
+}
+// Un'Aura aggiunge solo bonus: l'IA la gioca esclusivamente su una propria creatura (la più solida,
+// così resta in campo più a lungo). Senza creature proprie non la gioca.
+function aiChooseAuraHost(s: GameState) {
+  const own = units(s, 0);
+  if (!own.length) return null;
+  return [...own].sort((x, y) => creatureValue(y.cell) - creatureValue(x.cell))[0].cell.instance_id;
+}
+// Nel motore l'attacco non provoca contrattacco: non costa nulla all'attaccante. L'IA sceglie quindi la
+// coppia (attaccante, bersaglio) migliore: attacco diretto letale, poi uccisioni (prima la creatura più
+// pericolosa), poi danni; non attacca con attacco 0. L'attacco diretto è possibile solo senza nemici adiacenti.
+function aiChooseAttack(s: GameState) {
+  type Strike = { score: number; from: Position; instanceId: string; victim?: { position: Position; id: string } };
+  let best: Strike | null = null;
+  const life = s.players[1].life;
+  for (const u of units(s, 0)) {
+    if (u.cell.tired || u.cell.attack <= 0) continue;
+    const foes = enemyNeighbours(s, u.position, 0);
+    if (!foes.length) {
+      const score = u.cell.attack >= life ? 1000 : 10 + u.cell.attack * 3;
+      if (!best || score > best.score) best = { score, from: u.position, instanceId: u.cell.instance_id };
+      continue;
+    }
+    for (const position of foes) {
+      const v = at(s, position);
+      if (v?.kind !== 'creature') continue;
+      const score = u.cell.attack >= v.hp ? 100 + v.attack * 3 + v.max_hp : 10 + Math.min(u.cell.attack, v.hp) * 4 + v.attack;
+      if (!best || score > best.score) best = { score, from: u.position, instanceId: u.cell.instance_id, victim: { position, id: v.instance_id } };
+    }
+  }
+  return best;
 }
 async function continueAiMostrissimo(c: Context) {
   const s = c.s, pending = s.pending_mostrissimo;
@@ -681,12 +717,11 @@ async function advanceAi(c: Context) {
     expireTemporaryBuffs(s); s.phase = 'end'; log(c, 0, 'turn_end', 'L’IA termina il turno.');
     progress.stage = 'human_upkeep'; prepend(s, { kind: 'advance_ai' }); return;
   }
-  const ready = units(s, 0).find(x => !x.cell.tired);
-  if (ready) {
-    const enemies = enemyNeighbours(s, ready.position, 0), victim = enemies.length ? at(s, enemies[0]) : null;
-    const event: PendingEvent = { kind: 'attack', actor: 0, instance_id: ready.cell.instance_id, from: ready.position,
-      target: victim?.kind === 'creature' ? { type: 'creature', position: enemies[0] } : { type: 'player', playerIndex: 1 },
-      ...(victim?.kind === 'creature' ? { target_instance_id: victim.instance_id } : {}) };
+  const strike = aiChooseAttack(s);
+  if (strike) {
+    const event: PendingEvent = { kind: 'attack', actor: 0, instance_id: strike.instanceId, from: strike.from,
+      target: strike.victim ? { type: 'creature', position: strike.victim.position } : { type: 'player', playerIndex: 1 },
+      ...(strike.victim ? { target_instance_id: strike.victim.id } : {}) };
     progress.actions_taken++; prepend(s, { kind: 'declare_event', event }, { kind: 'advance_ai' }); return;
   }
   const cards = await Promise.all(s.players[0].hand.map(async inst => ({ inst, d: await getCardData(inst.card_id) })));
@@ -699,9 +734,9 @@ async function advanceAi(c: Context) {
       options.position = { row: 0, col: free };
     }
     if (d.card_type === 'aura') {
-      const host = units(s, 0)[0] ?? units(s, 1)[0];
+      const host = aiChooseAuraHost(s);
       if (!host) continue;
-      options.targetInstanceId = host.cell.instance_id;
+      options.targetInstanceId = host;
     } else {
       const fx = effects(d.effect_json).find(targeted);
       if (fx) {
@@ -718,7 +753,7 @@ async function advanceAi(c: Context) {
   }
   if (await attemptAiMostrissimo(c)) return;
   for (const mover of units(s, 0)) {
-    if (mover.cell.tired) continue;
+    if (mover.cell.tired || mover.cell.attack <= 0) continue;
     const to = around(mover.position).find(q => allowed(0, q.row) && !at(s, q) && enemyNeighbours(s, q, 0).length);
     if (!to) continue;
     const cost = await movementCost(mover.cell);
